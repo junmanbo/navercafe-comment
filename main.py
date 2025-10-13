@@ -71,8 +71,23 @@ async def naver_login(page: Page, user_id: str, password: str) -> bool:
         print("로그인 버튼 클릭...")
         await page.click("#log\\.login")
 
-        # 로그인 완료 대기 (메인 페이지로 이동 확인)
+        # 로그인 완료 대기
         await page.wait_for_load_state("networkidle")
+
+        # '등록' 버튼 확인 (브라우저 등록 확인 팝업)
+        try:
+            print("브라우저 등록 확인 중...")
+            # 등록 버튼이 있는지 확인 (로그인 직후 나타나는 팝업)
+            register_button = page.locator("button:has-text('등록'), a:has-text('등록')")
+
+            if await register_button.count() > 0:
+                print("'등록' 버튼 발견 - 클릭합니다.")
+                await register_button.first.click()
+                await page.wait_for_load_state("networkidle")
+            else:
+                print("'등록' 버튼 없음 - 건너뜁니다.")
+        except Exception as e:
+            print(f"등록 버튼 처리 중 오류 (무시하고 진행): {e}")
 
         # 로그인 성공 여부 확인
         current_url = page.url
@@ -176,35 +191,6 @@ async def main():
             print(f"\n카페로 이동 중: {cafe_url}")
             await page.goto(cafe_url)
             await page.wait_for_load_state("networkidle")
-
-            # '등록' 버튼 찾아서 클릭
-            try:
-                print("\n'등록' 버튼을 찾는 중...")
-                # 등록 버튼이 여러 위치에 있을 수 있으므로 다양한 셀렉터 시도
-                register_button_selectors = [
-                    "a:has-text('등록')",
-                    "button:has-text('등록')",
-                    "a.btn:has-text('등록')",
-                    "text=등록",
-                ]
-
-                button_clicked = False
-                for selector in register_button_selectors:
-                    try:
-                        if await page.locator(selector).count() > 0:
-                            await page.locator(selector).first.click()
-                            print("'등록' 버튼 클릭 완료!")
-                            button_clicked = True
-                            await page.wait_for_load_state("networkidle")
-                            break
-                    except Exception:
-                        continue
-
-                if not button_clicked:
-                    print("'등록' 버튼을 찾을 수 없습니다.")
-
-            except Exception as e:
-                print(f"'등록' 버튼 클릭 중 오류 발생: {e}")
 
             # 게시판 목록 가져오기
             boards = await get_cafe_boards(page)
