@@ -8,6 +8,36 @@ from playwright.async_api import Browser, Page, async_playwright
 load_dotenv()
 
 
+async def check_login_status(page: Page) -> bool:
+    """
+    현재 로그인 상태 확인
+
+    Args:
+        page: Playwright Page 객체
+
+    Returns:
+        bool: 로그인 되어 있으면 True, 아니면 False
+    """
+    try:
+        # 네이버 메인 페이지로 이동하여 로그인 상태 확인
+        await page.goto("https://www.naver.com")
+        await page.wait_for_load_state("networkidle")
+
+        # 로그인 버튼이 있으면 로그인 안 됨, 없으면 로그인 됨
+        login_button = await page.locator("a.link_login").count()
+
+        if login_button > 0:
+            print("로그인이 필요합니다.")
+            return False
+        else:
+            print("이미 로그인되어 있습니다.")
+            return True
+
+    except Exception as e:
+        print(f"로그인 상태 확인 중 오류 발생: {e}")
+        return False
+
+
 async def naver_login(page: Page, user_id: str, password: str) -> bool:
     """
     네이버 로그인 수행
@@ -21,6 +51,11 @@ async def naver_login(page: Page, user_id: str, password: str) -> bool:
         bool: 로그인 성공 여부
     """
     try:
+        # 먼저 로그인 상태 확인
+        is_logged_in = await check_login_status(page)
+        if is_logged_in:
+            return True
+
         print("네이버 로그인 페이지로 이동 중...")
         await page.goto("https://nid.naver.com/nidlogin.login")
 
@@ -141,6 +176,35 @@ async def main():
             print(f"\n카페로 이동 중: {cafe_url}")
             await page.goto(cafe_url)
             await page.wait_for_load_state("networkidle")
+
+            # '등록' 버튼 찾아서 클릭
+            try:
+                print("\n'등록' 버튼을 찾는 중...")
+                # 등록 버튼이 여러 위치에 있을 수 있으므로 다양한 셀렉터 시도
+                register_button_selectors = [
+                    "a:has-text('등록')",
+                    "button:has-text('등록')",
+                    "a.btn:has-text('등록')",
+                    "text=등록",
+                ]
+
+                button_clicked = False
+                for selector in register_button_selectors:
+                    try:
+                        if await page.locator(selector).count() > 0:
+                            await page.locator(selector).first.click()
+                            print("'등록' 버튼 클릭 완료!")
+                            button_clicked = True
+                            await page.wait_for_load_state("networkidle")
+                            break
+                    except Exception:
+                        continue
+
+                if not button_clicked:
+                    print("'등록' 버튼을 찾을 수 없습니다.")
+
+            except Exception as e:
+                print(f"'등록' 버튼 클릭 중 오류 발생: {e}")
 
             # 게시판 목록 가져오기
             boards = await get_cafe_boards(page)
