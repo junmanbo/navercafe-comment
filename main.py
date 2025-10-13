@@ -75,12 +75,14 @@ async def main():
         # chrome --remote-debugging-port=9222 --user-data-dir="/home/admin/.config/google-chrome"
 
         try:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            # IPv4 주소로 명시적으로 연결 (localhost 대신 127.0.0.1 사용)
+            browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222")
             print("기존 Chrome 브라우저에 연결되었습니다.")
         except Exception as e:
             print(f"Chrome 브라우저 연결 실패: {e}")
             print("\n다음 명령어로 Chrome을 실행한 후 다시 시도하세요:")
-            print("google-chrome --remote-debugging-port=9222 &")
+            print('Windows: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222')
+            print("Linux/Mac: google-chrome --remote-debugging-port=9222 &")
             return
 
         # 새 페이지 생성
