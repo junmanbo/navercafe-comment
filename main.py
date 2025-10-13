@@ -90,12 +90,21 @@ async def naver_login(page: Page, user_id: str, password: str) -> bool:
             print(f"등록 버튼 처리 중 오류 (무시하고 진행): {e}")
 
         # 로그인 성공 여부 확인
-        current_url = page.url
-        if "naver.com" in current_url and "nidlogin" not in current_url:
-            print("로그인 성공!")
+        print("\n로그인 상태를 확인하는 중...")
+        await page.wait_for_timeout(1000)  # 잠시 대기
+
+        # 네이버 메인으로 이동하여 로그인 상태 재확인
+        await page.goto("https://www.naver.com")
+        await page.wait_for_load_state("networkidle")
+
+        # 로그인 버튼이 없으면 로그인 성공
+        login_button = await page.locator("a.link_login").count()
+
+        if login_button == 0:
+            print("✓ 로그인 확인 완료!")
             return True
         else:
-            print("로그인 실패: 로그인 페이지에서 벗어나지 못했습니다.")
+            print("✗ 로그인 실패: 로그인이 제대로 완료되지 않았습니다.")
             return False
 
     except Exception as e:
