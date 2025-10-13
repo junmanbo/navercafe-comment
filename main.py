@@ -58,6 +58,7 @@ async def main():
     # 환경 변수에서 로그인 정보 가져오기
     naver_id = os.getenv("NAVER_ID")
     naver_pw = os.getenv("NAVER_PW")
+    print(f"NAVER ID: {naver_id}")
 
     if not naver_id or not naver_pw:
         print(".env 파일에 NAVER_ID와 NAVER_PW를 설정해주세요.")
