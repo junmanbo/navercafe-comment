@@ -53,16 +53,71 @@ async def naver_login(page: Page, user_id: str, password: str) -> bool:
         return False
 
 
+async def get_cafe_boards(page: Page) -> list[dict]:
+    """
+    카페 좌측 메뉴에서 게시판 목록 가져오기
+
+    Args:
+        page: Playwright Page 객체
+
+    Returns:
+        list[dict]: 게시판 정보 리스트 (name, url)
+    """
+    try:
+        print("\n카페 게시판 목록 불러오는 중...")
+
+        # iframe으로 전환 (네이버 카페는 iframe 구조 사용)
+        await page.wait_for_timeout(2000)  # 페이지 로딩 대기
+
+        # 좌측 메뉴의 게시판 링크들 찾기
+        # 네이버 카페의 좌측 메뉴 구조를 탐색
+        boards = []
+
+        # iframe 내부로 전환
+        cafe_iframe = page.frame_locator("iframe#cafe_main")
+
+        # 좌측 메뉴의 게시판 링크 찾기
+        menu_items = await page.locator("a.gm-tcol-c").all()
+
+        print(f"\n발견된 메뉴 항목 수: {len(menu_items)}")
+
+        for item in menu_items:
+            try:
+                name = await item.inner_text()
+                href = await item.get_attribute("href")
+
+                if name and href:
+                    boards.append({
+                        "name": name.strip(),
+                        "url": href
+                    })
+                    print(f"  - {name.strip()}")
+            except Exception as e:
+                continue
+
+        return boards
+
+    except Exception as e:
+        print(f"게시판 목록 불러오기 중 오류 발생: {e}")
+        return []
+
+
 async def main():
     """메인 함수"""
     # 환경 변수에서 로그인 정보 가져오기
     naver_id = os.getenv("NAVER_ID")
     naver_pw = os.getenv("NAVER_PW")
+    cafe_url = os.getenv("CAFE_URL")
+
     print(f"NAVER ID: {naver_id}")
 
     if not naver_id or not naver_pw:
         print(".env 파일에 NAVER_ID와 NAVER_PW를 설정해주세요.")
         print(".env.example 파일을 참고하여 .env 파일을 생성하세요.")
+        return
+
+    if not cafe_url:
+        print(".env 파일에 CAFE_URL을 설정해주세요.")
         return
 
     async with async_playwright() as p:
@@ -81,8 +136,22 @@ async def main():
 
         if success:
             print("\n로그인이 완료되었습니다.")
-            print("브라우저를 5초 후 종료합니다...")
-            await asyncio.sleep(5)
+
+            # 카페 페이지로 이동
+            print(f"\n카페로 이동 중: {cafe_url}")
+            await page.goto(cafe_url)
+            await page.wait_for_load_state("networkidle")
+
+            # 게시판 목록 가져오기
+            boards = await get_cafe_boards(page)
+
+            if boards:
+                print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
+            else:
+                print("\n게시판을 찾을 수 없습니다.")
+
+            print("\n브라우저를 10초 후 종료합니다...")
+            await asyncio.sleep(10)
 
         # 브라우저 종료
         await browser.close()
