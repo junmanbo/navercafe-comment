@@ -69,7 +69,7 @@ async def main():
         # 브라우저 실행 (headless=False로 설정하면 브라우저 창이 보임)
         print("브라우저 실행 중...")
         browser = await p.chromium.launch(
-            headless=True,  # 디버깅을 위해 브라우저 창 표시
+            headless=False,  # 디버깅을 위해 브라우저 창 표시
             slow_mo=100,  # 동작을 천천히 실행 (밀리초)
         )
 
