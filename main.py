@@ -67,53 +67,33 @@ async def main():
         return
 
     async with async_playwright() as p:
-        # 기존 Chrome 브라우저 사용 (사용자 데이터 포함)
-        print("Chrome 브라우저에 연결 중...")
-
-        # Chrome 브라우저를 원격 디버깅 모드로 실행하여 연결
-        # 먼저 Chrome을 원격 디버깅 포트로 실행해야 합니다
-        # chrome --remote-debugging-port=9222 --user-data-dir="/home/admin/.config/google-chrome"
-
-        try:
-            # IPv4 주소로 명시적으로 연결 (localhost 대신 127.0.0.1 사용)
-            browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-            print("기존 Chrome 브라우저에 연결되었습니다.")
-        except Exception as e:
-            print(f"Chrome 브라우저 연결 실패: {e}")
-            print("\n다음 명령어로 Chrome을 실행한 후 다시 시도하세요:")
-            print('Windows: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222')
-            print("Linux/Mac: google-chrome --remote-debugging-port=9222 &")
-            return
+        # Chromium 브라우저 실행
+        print("Chromium 브라우저 실행 중...")
+        browser = await p.chromium.launch(
+            headless=False,  # 브라우저 창 표시
+            slow_mo=100,  # 동작을 천천히 실행 (밀리초)
+        )
 
         # 새 페이지 생성
-        contexts = browser.contexts
-        if contexts:
-            context = contexts[0]
-            page = await context.new_page()
+        page = await browser.new_page()
+
+        # 카페 페이지로 이동
+        print(f"\n카페로 이동 중: {cafe_url}")
+        await page.goto(cafe_url)
+        await page.wait_for_load_state("networkidle")
+
+        # 게시판 목록 가져오기
+        boards = await get_cafe_boards(page)
+
+        if boards:
+            print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
         else:
-            print("브라우저 컨텍스트를 찾을 수 없습니다.")
-            return
+            print("\n게시판을 찾을 수 없습니다.")
 
-        try:
-            # 카페 페이지로 이동
-            print(f"\n카페로 이동 중: {cafe_url}")
-            await page.goto(cafe_url)
-            await page.wait_for_load_state("networkidle")
+        print("\n작업 완료! 브라우저를 수동으로 닫아주세요.")
 
-            # 게시판 목록 가져오기
-            boards = await get_cafe_boards(page)
-
-            if boards:
-                print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
-            else:
-                print("\n게시판을 찾을 수 없습니다.")
-
-            print("\n브라우저를 10초 후 종료합니다...")
-            await asyncio.sleep(10)
-
-        finally:
-            # 페이지만 닫고 브라우저는 유지
-            await page.close()
+        # 브라우저 자동 종료 비활성화 (사용자가 직접 닫음)
+        # await browser.close()
 
 
 if __name__ == "__main__":
