@@ -8,110 +8,6 @@ from playwright.async_api import Browser, Page, async_playwright
 load_dotenv()
 
 
-async def check_login_status(page: Page) -> bool:
-    """
-    현재 로그인 상태 확인
-
-    Args:
-        page: Playwright Page 객체
-
-    Returns:
-        bool: 로그인 되어 있으면 True, 아니면 False
-    """
-    try:
-        # 네이버 메인 페이지로 이동하여 로그인 상태 확인
-        await page.goto("https://www.naver.com")
-        await page.wait_for_load_state("networkidle")
-
-        # 로그인 버튼이 있으면 로그인 안 됨, 없으면 로그인 됨
-        login_button = await page.locator("a.link_login").count()
-
-        if login_button > 0:
-            print("로그인이 필요합니다.")
-            return False
-        else:
-            print("이미 로그인되어 있습니다.")
-            return True
-
-    except Exception as e:
-        print(f"로그인 상태 확인 중 오류 발생: {e}")
-        return False
-
-
-async def naver_login(page: Page, user_id: str, password: str) -> bool:
-    """
-    네이버 로그인 수행
-
-    Args:
-        page: Playwright Page 객체
-        user_id: 네이버 아이디
-        password: 네이버 비밀번호
-
-    Returns:
-        bool: 로그인 성공 여부
-    """
-    try:
-        # 먼저 로그인 상태 확인
-        is_logged_in = await check_login_status(page)
-        if is_logged_in:
-            return True
-
-        print("네이버 로그인 페이지로 이동 중...")
-        await page.goto("https://nid.naver.com/nidlogin.login")
-
-        # 아이디 입력
-        print("아이디 입력 중...")
-        await page.fill("#id", user_id)
-
-        # 비밀번호 입력
-        print("비밀번호 입력 중...")
-        await page.fill("#pw", password)
-
-        # 로그인 버튼 클릭
-        print("로그인 버튼 클릭...")
-        await page.click("#log\\.login")
-
-        # 로그인 완료 대기
-        await page.wait_for_load_state("networkidle")
-
-        # '등록' 버튼 확인 (브라우저 등록 확인 팝업)
-        try:
-            print("브라우저 등록 확인 중...")
-            # 등록 버튼이 있는지 확인 (로그인 직후 나타나는 팝업)
-            register_button = page.locator("button:has-text('등록'), a:has-text('등록')")
-
-            if await register_button.count() > 0:
-                print("'등록' 버튼 발견 - 클릭합니다.")
-                await register_button.first.click()
-                await page.wait_for_load_state("networkidle")
-            else:
-                print("'등록' 버튼 없음 - 건너뜁니다.")
-        except Exception as e:
-            print(f"등록 버튼 처리 중 오류 (무시하고 진행): {e}")
-
-        # 로그인 성공 여부 확인
-        print("\n로그인 상태를 확인하는 중...")
-        await page.wait_for_timeout(1000)  # 잠시 대기
-
-        # 네이버 메인으로 이동하여 로그인 상태 재확인
-        await page.goto("https://www.naver.com")
-        await page.wait_for_load_state("networkidle")
-
-        # 로그인 버튼이 없으면 로그인 성공
-        login_button = await page.locator("a.link_login").count()
-
-        if login_button == 0:
-            print("✓ 로그인 확인 완료!")
-            return True
-        else:
-            print("✗ 로그인 실패: 로그인이 제대로 완료되지 않았습니다.")
-            return False
-
-    except Exception as e:
-        print(f"로그인 중 오류 발생: {e}")
-        return False
-
-
 async def get_cafe_boards(page: Page) -> list[dict]:
     """
     카페 좌측 메뉴에서 게시판 목록 가져오기
@@ -163,39 +59,40 @@ async def get_cafe_boards(page: Page) -> list[dict]:
 
 async def main():
     """메인 함수"""
-    # 환경 변수에서 로그인 정보 가져오기
-    naver_id = os.getenv("NAVER_ID")
-    naver_pw = os.getenv("NAVER_PW")
+    # 환경 변수에서 카페 URL 가져오기
     cafe_url = os.getenv("CAFE_URL")
-
-    print(f"NAVER ID: {naver_id}")
-
-    if not naver_id or not naver_pw:
-        print(".env 파일에 NAVER_ID와 NAVER_PW를 설정해주세요.")
-        print(".env.example 파일을 참고하여 .env 파일을 생성하세요.")
-        return
 
     if not cafe_url:
         print(".env 파일에 CAFE_URL을 설정해주세요.")
         return
 
     async with async_playwright() as p:
-        # 브라우저 실행 (headless=False로 설정하면 브라우저 창이 보임)
-        print("브라우저 실행 중...")
-        browser = await p.chromium.launch(
-            headless=False,  # 디버깅을 위해 브라우저 창 표시
-            slow_mo=100,  # 동작을 천천히 실행 (밀리초)
-        )
+        # 기존 Chrome 브라우저 사용 (사용자 데이터 포함)
+        print("Chrome 브라우저에 연결 중...")
+
+        # Chrome 브라우저를 원격 디버깅 모드로 실행하여 연결
+        # 먼저 Chrome을 원격 디버깅 포트로 실행해야 합니다
+        # chrome --remote-debugging-port=9222 --user-data-dir="/home/admin/.config/google-chrome"
+
+        try:
+            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            print("기존 Chrome 브라우저에 연결되었습니다.")
+        except Exception as e:
+            print(f"Chrome 브라우저 연결 실패: {e}")
+            print("\n다음 명령어로 Chrome을 실행한 후 다시 시도하세요:")
+            print("google-chrome --remote-debugging-port=9222 &")
+            return
 
         # 새 페이지 생성
-        page = await browser.new_page()
+        contexts = browser.contexts
+        if contexts:
+            context = contexts[0]
+            page = await context.new_page()
+        else:
+            print("브라우저 컨텍스트를 찾을 수 없습니다.")
+            return
 
-        # 네이버 로그인
-        success = await naver_login(page, naver_id, naver_pw)
-
-        if success:
-            print("\n로그인이 완료되었습니다.")
-
+        try:
             # 카페 페이지로 이동
             print(f"\n카페로 이동 중: {cafe_url}")
             await page.goto(cafe_url)
@@ -212,8 +109,9 @@ async def main():
             print("\n브라우저를 10초 후 종료합니다...")
             await asyncio.sleep(10)
 
-        # 브라우저 종료
-        await browser.close()
+        finally:
+            # 페이지만 닫고 브라우저는 유지
+            await page.close()
 
 
 if __name__ == "__main__":
