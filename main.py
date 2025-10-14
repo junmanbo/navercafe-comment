@@ -174,26 +174,95 @@ async def get_today_posts_from_board(page: Page, board_url: str, board_name: str
     return await get_posts_from_board_by_date(page, board_url, board_name, today)
 
 
-async def visit_post(page: Page, post_url: str, post_title: str):
+async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
     """
-    특정 게시글 방문
+    특정 게시글 방문하여 본문 내용 가져오기
 
     Args:
         page: Playwright Page 객체
         post_url: 게시글 URL
         post_title: 게시글 제목
+
+    Returns:
+        dict: 게시글 정보 (title, url, content)
     """
     try:
         print(f"\n게시글 방문 중: {post_title}")
 
         await page.goto(post_url)
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(2000)
 
-        print(f"✓ 게시글 로드 완료: {post_title}")
+        # 본문 내용 가져오기
+        content = ""
+
+        # iframe 존재 여부 확인
+        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+
+        if iframe_exists:
+            print("  iframe 모드로 본문 추출 중...")
+            # 구버전: iframe 내부에서 본문 찾기
+            cafe_iframe = page.frame_locator("iframe#cafe_main")
+            try:
+                # 본문 영역 선택자 (다양한 선택자 시도)
+                content_elem = cafe_iframe.locator(".se-main-container, .ArticleContentBox, div.article_viewer, #content").first
+                content = await content_elem.inner_text(timeout=3000)
+            except Exception as e:
+                print(f"  iframe 본문 추출 실패: {e}")
+        else:
+            print("  일반 페이지 모드로 본문 추출 중...")
+            # 신버전: 메인 페이지에서 직접 본문 찾기
+            try:
+                # 다양한 본문 선택자 시도
+                selectors = [
+                    ".se-main-container",  # 스마트에디터
+                    ".article_viewer",  # 구버전 카페
+                    "[class*='ArticleContent']",  # 새 카페 UI
+                    "article",  # HTML5 article 태그
+                    ".post_ct",  # 포스트 컨텐츠
+                ]
+
+                for selector in selectors:
+                    try:
+                        content_elem = page.locator(selector).first
+                        content = await content_elem.inner_text(timeout=1000)
+                        if content and content.strip():
+                            print(f"  본문 추출 성공 (선택자: {selector})")
+                            break
+                    except:
+                        continue
+
+            except Exception as e:
+                print(f"  본문 추출 실패: {e}")
+
+        # 본문이 비어있으면 전체 페이지 텍스트 가져오기 시도
+        if not content or not content.strip():
+            print("  기본 선택자로 본문을 찾을 수 없어 전체 페이지에서 추출 시도...")
+            try:
+                content = await page.inner_text("body")
+            except:
+                content = ""
+
+        content = content.strip()
+
+        if content:
+            print(f"✓ 게시글 로드 완료: {post_title} (본문 길이: {len(content)}자)")
+        else:
+            print(f"⚠ 게시글 로드 완료하였으나 본문을 찾을 수 없음: {post_title}")
+
+        return {
+            "title": post_title,
+            "url": post_url,
+            "content": content
+        }
 
     except Exception as e:
         print(f"게시글 방문 중 오류 발생: {e}")
+        return {
+            "title": post_title,
+            "url": post_url,
+            "content": ""
+        }
 
 
 async def main():
@@ -303,10 +372,28 @@ async def main():
 
             print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
 
-            # 각 게시글 방문
+            # 각 게시글 방문하고 본문 수집
+            post_contents = []
             for post in two_days_posts:
-                await visit_post(page, post["url"], post["title"])
+                post_data = await visit_post(page, post["url"], post["title"])
+                post_contents.append(post_data)
                 await page.wait_for_timeout(1000)  # 잠시 대기
+
+            # 수집한 게시글 본문 출력
+            print(f"\n\n{'='*60}")
+            print(f"[{board['name']}] 수집된 게시글 본문")
+            print(f"{'='*60}\n")
+
+            for idx, post_data in enumerate(post_contents, 1):
+                print(f"\n--- 게시글 {idx} ---")
+                print(f"제목: {post_data['title']}")
+                print(f"URL: {post_data['url']}")
+                print(f"본문 길이: {len(post_data['content'])}자")
+                print(f"\n[본문 내용]")
+                print(post_data['content'][:500])  # 처음 500자만 출력
+                if len(post_data['content']) > 500:
+                    print(f"\n... (총 {len(post_data['content'])}자 중 500자만 표시)")
+                print(f"\n{'='*60}")
 
         print("\n" + "="*60)
         print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
