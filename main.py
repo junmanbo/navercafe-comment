@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from playwright.async_api import Browser, Page, async_playwright
@@ -58,6 +58,85 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         return []
 
 
+async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: str, target_date: str, limit: int = 5) -> list[dict]:
+    """
+    특정 게시판에서 특정 날짜의 게시글 목록 가져오기
+
+    Args:
+        page: Playwright Page 객체
+        board_url: 게시판 URL
+        board_name: 게시판 이름
+        target_date: 찾을 날짜 (YYYY.MM.DD 형식)
+        limit: 가져올 최대 게시글 수
+
+    Returns:
+        list[dict]: 게시글 정보 리스트 (title, url, date)
+    """
+    try:
+        print(f"\n'{board_name}' 게시판으로 이동 중...")
+
+        # 게시판 페이지로 이동 (상대 경로를 절대 경로로 변환)
+        if board_url.startswith("/"):
+            board_url = f"https://cafe.naver.com{board_url}"
+
+        await page.goto(board_url)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(2000)
+
+        print(f"찾을 날짜: {target_date}")
+
+        posts = []
+
+        # iframe 내부에서 게시글 목록 찾기
+        cafe_iframe = page.frame_locator("iframe#cafe_main")
+
+        # 새로운 카페 UI의 게시글 목록 찾기
+        # 게시글 행을 찾기 (tr 태그 또는 article 태그)
+        article_items = await cafe_iframe.locator("tr").all()
+
+        print(f"발견된 전체 행 수: {len(article_items)}")
+
+        for item in article_items:
+            # 이미 필요한 개수만큼 찾았으면 중단
+            if len(posts) >= limit:
+                break
+
+            try:
+                # 날짜 찾기 (작성일 컬럼)
+                date_elem = item.locator("td.td_date, td[class*='date'], .date")
+                date_text = await date_elem.inner_text()
+
+                # 날짜 텍스트가 비어있으면 스킵
+                if not date_text or date_text.strip() == "":
+                    continue
+
+                # 특정 날짜 게시글만 필터링 (YYYY.MM.DD 형식 매칭)
+                if target_date in date_text:
+                    # 제목 찾기
+                    title_elem = item.locator("a.article-title, a[class*='article'], td.td_article a, .article a")
+                    title = await title_elem.inner_text()
+                    post_url = await title_elem.get_attribute("href")
+
+                    if title and post_url:
+                        posts.append({
+                            "title": title.strip(),
+                            "url": post_url,
+                            "date": date_text.strip()
+                        })
+                        print(f"  ✓ [{date_text.strip()}] {title.strip()}")
+
+            except Exception as e:
+                # 제목이나 날짜가 없는 행은 무시
+                continue
+
+        print(f"'{board_name}'에서 찾은 게시글: {len(posts)}개")
+        return posts
+
+    except Exception as e:
+        print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
+        return []
+
+
 async def get_today_posts_from_board(page: Page, board_url: str, board_name: str) -> list[dict]:
     """
     특정 게시판에서 오늘 날짜의 게시글 목록 가져오기
@@ -70,60 +149,9 @@ async def get_today_posts_from_board(page: Page, board_url: str, board_name: str
     Returns:
         list[dict]: 오늘 날짜 게시글 정보 리스트 (title, url, date)
     """
-    try:
-        print(f"\n'{board_name}' 게시판으로 이동 중...")
-
-        # 게시판 페이지로 이동
-        await page.goto(board_url)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(1000)
-
-        # 오늘 날짜 (MM.DD 형식)
-        today = datetime.now().strftime("%m.%d")
-        print(f"오늘 날짜: {today}")
-
-        posts = []
-
-        # iframe 내부에서 게시글 목록 찾기
-        cafe_iframe = page.frame_locator("iframe#cafe_main")
-
-        # 게시글 목록 테이블 찾기 (네이버 카페의 게시글 목록 구조)
-        article_items = await cafe_iframe.locator("tr.article-board").all()
-
-        if not article_items:
-            # 다른 선택자 시도
-            article_items = await cafe_iframe.locator("div.article-board").all()
-
-        print(f"발견된 게시글 수: {len(article_items)}")
-
-        for item in article_items:
-            try:
-                # 제목 찾기
-                title_elem = item.locator("a.article-title, a.board-list")
-                title = await title_elem.inner_text()
-                post_url = await title_elem.get_attribute("href")
-
-                # 날짜 찾기
-                date_elem = item.locator("td.td_date, span.date")
-                date_text = await date_elem.inner_text()
-
-                # 오늘 날짜 게시글만 필터링
-                if today in date_text:
-                    posts.append({
-                        "title": title.strip(),
-                        "url": post_url,
-                        "date": date_text.strip()
-                    })
-                    print(f"  ✓ [{date_text.strip()}] {title.strip()}")
-
-            except Exception as e:
-                continue
-
-        return posts
-
-    except Exception as e:
-        print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
-        return []
+    # 오늘 날짜 (YYYY.MM.DD 형식)
+    today = datetime.now().strftime("%Y.%m.%d")
+    return await get_posts_from_board_by_date(page, board_url, board_name, today)
 
 
 async def visit_post(page: Page, post_url: str, post_title: str):
@@ -150,8 +178,10 @@ async def visit_post(page: Page, post_url: str, post_title: str):
 
 async def main():
     """메인 함수"""
-    # 환경 변수에서 카페 URL 가져오기
+    # 환경 변수에서 설정 가져오기
     cafe_url = os.getenv("CAFE_URL")
+    naver_id = os.getenv("NAVER_ID")
+    naver_pw = os.getenv("NAVER_PW")
 
     if not cafe_url:
         print(".env 파일에 CAFE_URL을 설정해주세요.")
@@ -170,16 +200,40 @@ async def main():
 
         # 네이버 로그인 페이지로 이동
         print("\n네이버 로그인 페이지로 이동합니다.")
-        print("30초 안에 로그인을 완료해주세요...")
         await page.goto("https://nid.naver.com/nidlogin.login")
         await page.wait_for_load_state("networkidle")
 
-        # 30초 동안 사용자가 로그인하도록 대기
-        for i in range(30, 0, -1):
-            print(f"로그인 대기 중... ({i}초 남음)")
-            await asyncio.sleep(1)
+        # 자동 로그인 시도
+        if naver_id and naver_pw:
+            print("자동 로그인을 시도합니다...")
 
-        print("\n로그인 시간 종료. 카페로 이동합니다.")
+            # 아이디 입력
+            await page.fill('input[name="id"]', naver_id)
+            await page.wait_for_timeout(500)
+
+            # 비밀번호 입력
+            await page.fill('input[name="pw"]', naver_pw)
+            await page.wait_for_timeout(500)
+
+            # 로그인 버튼 클릭
+            await page.click('button[type="submit"]')
+
+            # 15초 대기
+            print("로그인 처리 중... 15초 대기")
+            for i in range(15, 0, -1):
+                print(f"대기 중... ({i}초 남음)")
+                await asyncio.sleep(1)
+
+            print("로그인 완료!")
+        else:
+            print(".env 파일에 NAVER_ID와 NAVER_PW가 없습니다.")
+            print("30초 안에 로그인을 완료해주세요...")
+            # 30초 동안 사용자가 로그인하도록 대기
+            for i in range(30, 0, -1):
+                print(f"로그인 대기 중... ({i}초 남음)")
+                await asyncio.sleep(1)
+
+        print("\n카페로 이동합니다.")
 
         # 카페 페이지로 이동
         print(f"\n카페로 이동 중: {cafe_url}")
@@ -206,23 +260,31 @@ async def main():
         for board in jinhaeng_boards:
             print(f"  - {board['name']}")
 
-        # 각 '진행' 게시판에서 오늘 날짜 게시글 확인
+        # 2일 전 날짜 계산 (YYYY.MM.DD 형식)
+        two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y.%m.%d")
+        print(f"\n2일 전 날짜: {two_days_ago}")
+
+        # 각 '진행' 게시판에서 2일 전 게시글 확인
         for board in jinhaeng_boards:
             print(f"\n{'='*60}")
             print(f"게시판: {board['name']}")
             print(f"{'='*60}")
 
-            # 오늘 날짜 게시글 가져오기
-            today_posts = await get_today_posts_from_board(page, board["url"], board["name"])
+            # 2일 전 게시글 5개 가져오기
+            two_days_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], two_days_ago, limit=5)
 
-            if not today_posts:
-                print(f"'{board['name']}'에 오늘 작성된 게시글이 없습니다.")
+            if not two_days_posts:
+                print(f"'{board['name']}'에 2일 전 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
                 continue
 
-            print(f"\n오늘 작성된 게시글: {len(today_posts)}개")
+            if len(two_days_posts) < 5:
+                print(f"'{board['name']}'에 2일 전 게시글이 {len(two_days_posts)}개만 있습니다. (5개 미만) 다음 게시판으로 이동합니다.")
+                continue
+
+            print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
 
             # 각 게시글 방문
-            for post in today_posts:
+            for post in two_days_posts:
                 await visit_post(page, post["url"], post["title"])
                 await page.wait_for_timeout(1000)  # 잠시 대기
 
