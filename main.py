@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from playwright.async_api import Browser, Page, async_playwright
+from openai import OpenAI
 
 # .env 파일 로드
 load_dotenv()
@@ -156,22 +157,47 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
         return []
 
-
-async def get_today_posts_from_board(page: Page, board_url: str, board_name: str) -> list[dict]:
+def get_chatgpt_comment(post_content: str) -> str:
     """
-    특정 게시판에서 오늘 날짜의 게시글 목록 가져오기
+    OpenAI API를 사용하여 게시글에 대한 댓글 생성
 
     Args:
-        page: Playwright Page 객체
-        board_url: 게시판 URL
-        board_name: 게시판 이름
+        post_content: 게시글 본문 내용
 
     Returns:
-        list[dict]: 오늘 날짜 게시글 정보 리스트 (title, url, date)
+        str: ChatGPT가 생성한 댓글
     """
-    # 오늘 날짜 (YYYY.MM.DD 형식)
-    today = datetime.now().strftime("%Y.%m.%d")
-    return await get_posts_from_board_by_date(page, board_url, board_name, today)
+    try:
+        print("  OpenAI API로 댓글 요청 중...")
+
+        # OpenAI API 키 가져오기
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            print("  ⚠ .env 파일에 OPENAI_API_KEY가 설정되지 않았습니다.")
+            return ""
+
+        # OpenAI 클라이언트 생성
+        client = OpenAI(api_key=api_key)
+
+        # 프롬프트 작성
+        prompt = f"아래의 글을 읽고 구어체로 간단하게 한줄 댓글을 작성해줘. 존댓말을 사용하고 답변으로는 딱 한줄 댓글만 작성해줘. 글 내용: {post_content[:1000]}"  # 내용이 너무 길면 처음 1000자만
+
+        # ChatGPT API 호출
+        response = client.responses.create(
+            model="gpt-5-nano",
+            reasoning={"effort": "low"},
+            instructions="당신은 친근한 카페 회원입니다. 간단하고 따뜻한 한줄 댓글을 작성해주세요.",
+            input=prompt
+        )
+
+        # 응답 추출
+        comment = response.output_text
+        print(f"  ✓ ChatGPT 응답 수신 완료 (길이: {len(comment)}자)")
+        return comment
+
+    except Exception as e:
+        print(f"  ChatGPT 댓글 생성 중 오류 발생: {e}")
+        return ""
 
 
 async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
@@ -366,11 +392,10 @@ async def main():
                 print(f"'{board['name']}'에 2일 전 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
                 continue
 
-            if len(two_days_posts) < 5:
-                print(f"'{board['name']}'에 2일 전 게시글이 {len(two_days_posts)}개만 있습니다. (5개 미만) 다음 게시판으로 이동합니다.")
-                continue
-
             print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
+
+            if len(two_days_posts) < 5:
+                print(f"  (5개 미만이지만 {len(two_days_posts)}개 게시글 모두 처리합니다)")
 
             # 각 게시글 방문하고 본문 수집
             post_contents = []
@@ -379,9 +404,9 @@ async def main():
                 post_contents.append(post_data)
                 await page.wait_for_timeout(1000)  # 잠시 대기
 
-            # 수집한 게시글 본문 출력
+            # ChatGPT로 댓글 생성
             print(f"\n\n{'='*60}")
-            print(f"[{board['name']}] 수집된 게시글 본문")
+            print(f"[{board['name']}] ChatGPT 댓글 생성 중")
             print(f"{'='*60}\n")
 
             for idx, post_data in enumerate(post_contents, 1):
@@ -389,10 +414,22 @@ async def main():
                 print(f"제목: {post_data['title']}")
                 print(f"URL: {post_data['url']}")
                 print(f"본문 길이: {len(post_data['content'])}자")
-                print(f"\n[본문 내용]")
-                print(post_data['content'][:500])  # 처음 500자만 출력
-                if len(post_data['content']) > 500:
-                    print(f"\n... (총 {len(post_data['content'])}자 중 500자만 표시)")
+
+                # ChatGPT로 댓글 생성
+                if post_data['content']:
+                    comment = get_chatgpt_comment(post_data['content'])
+                    post_data['comment'] = comment
+
+                    print(f"\n[생성된 댓글]")
+                    if comment:
+                        print(f"{comment}")
+                    else:
+                        print("(댓글 생성 실패)")
+                else:
+                    print("\n[생성된 댓글]")
+                    print("(본문이 없어 댓글을 생성할 수 없습니다)")
+                    post_data['comment'] = ""
+
                 print(f"\n{'='*60}")
 
         print("\n" + "="*60)
