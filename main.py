@@ -81,18 +81,25 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
 
         await page.goto(board_url)
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(3000)
 
         print(f"찾을 날짜: {target_date}")
 
         posts = []
 
-        # iframe 내부에서 게시글 목록 찾기
-        cafe_iframe = page.frame_locator("iframe#cafe_main")
+        # 새로운 카페 UI는 iframe 없이 직접 렌더링됨
+        # iframe 존재 여부 확인
+        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
 
-        # 새로운 카페 UI의 게시글 목록 찾기
-        # 게시글 행을 찾기 (tr 태그 또는 article 태그)
-        article_items = await cafe_iframe.locator("tr").all()
+        if iframe_exists:
+            print("iframe 모드로 게시글 검색 중...")
+            # 구버전: iframe 내부에서 게시글 목록 찾기
+            cafe_iframe = page.frame_locator("iframe#cafe_main")
+            article_items = await cafe_iframe.locator("tr").all()
+        else:
+            print("일반 페이지 모드로 게시글 검색 중...")
+            # 신버전: 메인 페이지에서 직접 게시글 목록 찾기
+            article_items = await page.locator("tr").all()
 
         print(f"발견된 전체 행 수: {len(article_items)}")
 
@@ -102,9 +109,13 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                 break
 
             try:
-                # 날짜 찾기 (작성일 컬럼)
-                date_elem = item.locator("td.td_date, td[class*='date'], .date")
-                date_text = await date_elem.inner_text()
+                # 날짜 찾기 (작성일 컬럼) - 여러 선택자 시도
+                date_text = ""
+                try:
+                    date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
+                    date_text = await date_elem.inner_text(timeout=100)
+                except:
+                    pass
 
                 # 날짜 텍스트가 비어있으면 스킵
                 if not date_text or date_text.strip() == "":
@@ -113,11 +124,20 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                 # 특정 날짜 게시글만 필터링 (YYYY.MM.DD 형식 매칭)
                 if target_date in date_text:
                     # 제목 찾기
-                    title_elem = item.locator("a.article-title, a[class*='article'], td.td_article a, .article a")
-                    title = await title_elem.inner_text()
-                    post_url = await title_elem.get_attribute("href")
+                    title = ""
+                    post_url = ""
+                    try:
+                        title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
+                        title = await title_elem.inner_text(timeout=100)
+                        post_url = await title_elem.get_attribute("href", timeout=100)
+                    except:
+                        pass
 
                     if title and post_url:
+                        # 상대 경로를 절대 경로로 변환
+                        if post_url.startswith("/"):
+                            post_url = f"https://cafe.naver.com{post_url}"
+
                         posts.append({
                             "title": title.strip(),
                             "url": post_url,
