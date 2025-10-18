@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
-from playwright.async_api import Browser, Page, async_playwright
+from playwright.async_api import Page, async_playwright
 from openai import OpenAI
 
 # .env 파일 로드
@@ -31,7 +31,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         boards = []
 
         # iframe 내부로 전환
-        cafe_iframe = page.frame_locator("iframe#cafe_main")
+        page.frame_locator("iframe#cafe_main")
 
         # 좌측 메뉴의 게시판 링크 찾기
         menu_items = await page.locator("a.gm-tcol-c").all()
@@ -49,7 +49,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
                         "url": href
                     })
                     print(f"  - {name.strip()}")
-            except Exception as e:
+            except Exception:
                 continue
 
         return boards
@@ -115,7 +115,7 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                 try:
                     date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
                     date_text = await date_elem.inner_text(timeout=100)
-                except:
+                except Exception:
                     pass
 
                 # 날짜 텍스트가 비어있으면 스킵
@@ -131,7 +131,7 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                         title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
                         title = await title_elem.inner_text(timeout=100)
                         post_url = await title_elem.get_attribute("href", timeout=100)
-                    except:
+                    except Exception:
                         pass
 
                     if title and post_url:
@@ -151,7 +151,7 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                         })
                         print(f"  ✓ [{date_text.strip()}] {title.strip()}")
 
-            except Exception as e:
+            except Exception:
                 # 제목이나 날짜가 없는 행은 무시
                 continue
 
@@ -162,7 +162,8 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
         return []
 
-def get_user_confirmation(comment_text: str) -> bool:
+
+def get_user_confirmation(comment_text: str):
     """
     사용자에게 댓글 등록 확인 받기
 
@@ -172,20 +173,23 @@ def get_user_confirmation(comment_text: str) -> bool:
     Returns:
         bool: 등록 승인 여부 (Y: True, N: False)
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("[생성된 댓글 내용]")
     print(f"\"{comment_text}\"")
-    print("="*60)
+    print("=" * 60)
 
     while True:
-        response = input("\n정말 이 댓글로 등록하시겠습니까? [Y/N]: ").strip().upper()
+        response = input("\n정말 이 댓글로 등록하시겠습니까? [Y/N] \n댓글 수정을 원하면 [FIX]를 입력해 주세요.: ").strip().upper()
 
         if response == 'Y':
             print("✓ 댓글 등록을 진행합니다.")
-            return True
+            return True, comment_text
         elif response == 'N':
             print("✗ 댓글 등록을 건너뜁니다. 다음 게시글로 이동합니다.")
-            return False
+            return False, comment_text
+        elif response == 'FIX':
+            comment_text = input("댓글 수정을 진행합니다. (수정된 댓글로 바로 등록됩니다.)\n댓글을 입력해 주세요.: ")
+            return True, comment_text
         else:
             print("⚠ 잘못된 입력입니다. Y 또는 N을 입력해주세요.")
 
@@ -225,6 +229,18 @@ def get_chatgpt_comment(post_content: str) -> str:
 
         # 응답 추출
         comment = response.output_text
+
+        # 특수기호 제거 (한글, 영문, 숫자, 공백만 남기기)
+        import re
+        comment = re.sub(r'[^가-힣a-zA-Z0-9\s]', '', comment)
+
+        # 양쪽 공백 제거
+        comment = comment.strip()
+
+        # 끝에 '! :)' 추가
+        if comment:
+            comment = comment + "! :)"
+
         print(f"  ✓ ChatGPT 응답 수신 완료 (길이: {len(comment)}자)")
         return comment
 
@@ -246,7 +262,7 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
         bool: 댓글 등록 성공 여부
     """
     try:
-        print(f"\n댓글 등록 시도 중...")
+        print("\n댓글 등록 시도 중...")
         print(f"댓글 내용: {comment_text}")
 
         # 게시글 페이지로 이동 (이미 해당 페이지에 있을 수 있음)
@@ -279,7 +295,7 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                     if await comment_input.count() > 0:
                         print(f"  댓글 입력창 발견 (선택자: {selector})")
                         break
-                except:
+                except Exception:
                     continue
 
             if not comment_input or await comment_input.count() == 0:
@@ -309,7 +325,7 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                     if await submit_button.count() > 0:
                         print(f"  등록 버튼 발견 (선택자: {selector})")
                         break
-                except:
+                except Exception:
                     continue
 
             if not submit_button or await submit_button.count() == 0:
@@ -340,7 +356,7 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                         comment_input = page.locator(selector).first
                         print(f"  댓글 입력창 발견 (선택자: {selector})")
                         break
-                except:
+                except Exception:
                     continue
 
             if not comment_input:
@@ -370,7 +386,7 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                         submit_button = page.locator(selector).first
                         print(f"  등록 버튼 발견 (선택자: {selector})")
                         break
-                except:
+                except Exception:
                     continue
 
             if not submit_button:
@@ -444,7 +460,7 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
                         if content and content.strip():
                             print(f"  본문 추출 성공 (선택자: {selector})")
                             break
-                    except:
+                    except Exception:
                         continue
 
             except Exception as e:
@@ -455,7 +471,7 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
             print("  기본 선택자로 본문을 찾을 수 없어 전체 페이지에서 추출 시도...")
             try:
                 content = await page.inner_text("body")
-            except:
+            except Exception:
                 content = ""
 
         content = content.strip()
@@ -611,11 +627,11 @@ async def main():
 
                     if comment:
                         # 사용자 확인 받기
-                        user_approved = get_user_confirmation(comment)
+                        user_approved, comment = get_user_confirmation(comment)
 
                         if user_approved:
                             # 댓글 등록
-                            print(f"\n[댓글 등록 시작]")
+                            print("\n[댓글 등록 시작]")
                             success = await post_comment(page, post_data['url'], comment)
 
                             if success:
@@ -638,9 +654,9 @@ async def main():
 
                 print(f"\n{'='*60}")
 
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
-        print("="*60)
+        print("=" * 60)
 
         # 브라우저 자동 종료 비활성화 (사용자가 직접 닫음)
         # await browser.close()
