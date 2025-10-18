@@ -135,6 +135,11 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                         pass
 
                     if title and post_url:
+                        # 제목에 '공지'가 포함된 게시글은 제외
+                        if '공지' in title:
+                            print(f"  ⊗ [{date_text.strip()}] {title.strip()} (공지 게시글 제외)")
+                            continue
+
                         # 상대 경로를 절대 경로로 변환
                         if post_url.startswith("/"):
                             post_url = f"https://cafe.naver.com{post_url}"
