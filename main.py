@@ -157,6 +157,34 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
         return []
 
+def get_user_confirmation(comment_text: str) -> bool:
+    """
+    사용자에게 댓글 등록 확인 받기
+
+    Args:
+        comment_text: 등록할 댓글 내용
+
+    Returns:
+        bool: 등록 승인 여부 (Y: True, N: False)
+    """
+    print("\n" + "="*60)
+    print("[생성된 댓글 내용]")
+    print(f"\"{comment_text}\"")
+    print("="*60)
+
+    while True:
+        response = input("\n정말 이 댓글로 등록하시겠습니까? [Y/N]: ").strip().upper()
+
+        if response == 'Y':
+            print("✓ 댓글 등록을 진행합니다.")
+            return True
+        elif response == 'N':
+            print("✗ 댓글 등록을 건너뜁니다. 다음 게시글로 이동합니다.")
+            return False
+        else:
+            print("⚠ 잘못된 입력입니다. Y 또는 N을 입력해주세요.")
+
+
 def get_chatgpt_comment(post_content: str) -> str:
     """
     OpenAI API를 사용하여 게시글에 대한 댓글 생성
@@ -198,6 +226,162 @@ def get_chatgpt_comment(post_content: str) -> str:
     except Exception as e:
         print(f"  ChatGPT 댓글 생성 중 오류 발생: {e}")
         return ""
+
+
+async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
+    """
+    게시글에 댓글 작성 및 등록
+
+    Args:
+        page: Playwright Page 객체
+        post_url: 게시글 URL
+        comment_text: 작성할 댓글 내용
+
+    Returns:
+        bool: 댓글 등록 성공 여부
+    """
+    try:
+        print(f"\n댓글 등록 시도 중...")
+        print(f"댓글 내용: {comment_text}")
+
+        # 게시글 페이지로 이동 (이미 해당 페이지에 있을 수 있음)
+        current_url = page.url
+        if current_url != post_url:
+            await page.goto(post_url)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(2000)
+
+        # iframe 존재 여부 확인
+        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+
+        if iframe_exists:
+            print("  iframe 모드로 댓글 작성 중...")
+            cafe_iframe = page.frame_locator("iframe#cafe_main")
+
+            # 댓글 입력창 찾기 (여러 선택자 시도)
+            comment_selectors = [
+                "textarea[name='memo']",
+                "textarea.textarea",
+                "textarea#memo",
+                ".comment_inbox textarea",
+                "[class*='comment'] textarea",
+            ]
+
+            comment_input = None
+            for selector in comment_selectors:
+                try:
+                    comment_input = cafe_iframe.locator(selector).first
+                    if await comment_input.count() > 0:
+                        print(f"  댓글 입력창 발견 (선택자: {selector})")
+                        break
+                except:
+                    continue
+
+            if not comment_input or await comment_input.count() == 0:
+                print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
+                return False
+
+            # 댓글 입력
+            await comment_input.click()
+            await page.wait_for_timeout(500)
+            await comment_input.fill(comment_text)
+            await page.wait_for_timeout(1000)
+
+            # 댓글 등록 버튼 찾기
+            submit_selectors = [
+                "button:has-text('등록')",
+                "a:has-text('등록')",
+                "input[type='button'][value='등록']",
+                "input[type='submit'][value='등록']",
+                ".btn_register",
+                "#btn_register",
+            ]
+
+            submit_button = None
+            for selector in submit_selectors:
+                try:
+                    submit_button = cafe_iframe.locator(selector).first
+                    if await submit_button.count() > 0:
+                        print(f"  등록 버튼 발견 (선택자: {selector})")
+                        break
+                except:
+                    continue
+
+            if not submit_button or await submit_button.count() == 0:
+                print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
+                return False
+
+            # 등록 버튼 클릭
+            await submit_button.click()
+            await page.wait_for_timeout(2000)
+
+        else:
+            print("  일반 페이지 모드로 댓글 작성 중...")
+
+            # 댓글 입력창 찾기
+            comment_selectors = [
+                "textarea[name='memo']",
+                "textarea.textarea",
+                "textarea#memo",
+                ".comment_inbox textarea",
+                "[class*='comment'] textarea",
+                "[class*='Comment'] textarea",
+            ]
+
+            comment_input = None
+            for selector in comment_selectors:
+                try:
+                    if await page.locator(selector).count() > 0:
+                        comment_input = page.locator(selector).first
+                        print(f"  댓글 입력창 발견 (선택자: {selector})")
+                        break
+                except:
+                    continue
+
+            if not comment_input:
+                print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
+                return False
+
+            # 댓글 입력
+            await comment_input.click()
+            await page.wait_for_timeout(500)
+            await comment_input.fill(comment_text)
+            await page.wait_for_timeout(1000)
+
+            # 댓글 등록 버튼 찾기
+            submit_selectors = [
+                "button:has-text('등록')",
+                "a:has-text('등록')",
+                "input[type='button'][value='등록']",
+                "input[type='submit'][value='등록']",
+                ".btn_register",
+                "#btn_register",
+            ]
+
+            submit_button = None
+            for selector in submit_selectors:
+                try:
+                    if await page.locator(selector).count() > 0:
+                        submit_button = page.locator(selector).first
+                        print(f"  등록 버튼 발견 (선택자: {selector})")
+                        break
+                except:
+                    continue
+
+            if not submit_button:
+                print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
+                return False
+
+            # 등록 버튼 클릭
+            await submit_button.click()
+            await page.wait_for_timeout(2000)
+
+        print("  ✓ 댓글 등록 완료")
+        return True
+
+    except Exception as e:
+        print(f"  댓글 등록 중 오류 발생: {e}")
+        return False
 
 
 async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
@@ -306,7 +490,7 @@ async def main():
         # Chromium 브라우저 실행
         print("Chromium 브라우저 실행 중...")
         browser = await p.chromium.launch(
-            headless=False,  # 브라우저 창 표시
+            headless=False,  # 브라우저 창 표시 안함 (백그라운드 실행)
             slow_mo=100,  # 동작을 천천히 실행 (밀리초)
         )
 
@@ -420,11 +604,28 @@ async def main():
                     comment = get_chatgpt_comment(post_data['content'])
                     post_data['comment'] = comment
 
-                    print(f"\n[생성된 댓글]")
                     if comment:
-                        print(f"{comment}")
+                        # 사용자 확인 받기
+                        user_approved = get_user_confirmation(comment)
+
+                        if user_approved:
+                            # 댓글 등록
+                            print(f"\n[댓글 등록 시작]")
+                            success = await post_comment(page, post_data['url'], comment)
+
+                            if success:
+                                print("  ✓ 댓글이 성공적으로 등록되었습니다!")
+                            else:
+                                print("  ✗ 댓글 등록에 실패했습니다.")
+
+                            # 다음 게시글로 이동하기 전 대기
+                            await page.wait_for_timeout(2000)
+                        else:
+                            # 사용자가 N을 선택한 경우
+                            print("다음 게시글로 이동합니다...")
                     else:
-                        print("(댓글 생성 실패)")
+                        print("\n[생성된 댓글]")
+                        print("(댓글 생성 실패 - 등록 건너뜀)")
                 else:
                     print("\n[생성된 댓글]")
                     print("(본문이 없어 댓글을 생성할 수 없습니다)")
