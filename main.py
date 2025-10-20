@@ -302,19 +302,37 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                 print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
                 return False
 
+            # 댓글 입력창으로 스크롤 (기존 댓글이 있을 때 중요)
+            await comment_input.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+
             # 댓글 입력
             await comment_input.click()
             await page.wait_for_timeout(500)
+
+            # 기존 내용 지우기
+            await comment_input.fill("")
+            await page.wait_for_timeout(300)
+
+            # 댓글 입력
             await comment_input.fill(comment_text)
             await page.wait_for_timeout(1000)
 
-            # 댓글 등록 버튼 찾기
+            # 입력이 제대로 되었는지 확인
+            input_value = await comment_input.input_value()
+            print(f"  입력된 댓글 확인: {input_value[:50]}...")
+
+            # 댓글 등록 버튼 찾기 (정확한 선택자 우선)
             submit_selectors = [
+                "a.btn_register.is_active",
+                "a.btn_register",
+                ".btn_register.is_active",
+                ".btn_register",
+                "a[role='button'].btn_register",
                 "button:has-text('등록')",
                 "a:has-text('등록')",
                 "input[type='button'][value='등록']",
                 "input[type='submit'][value='등록']",
-                ".btn_register",
                 "#btn_register",
             ]
 
@@ -332,9 +350,38 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                 print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
                 return False
 
-            # 등록 버튼 클릭
-            await submit_button.click()
-            await page.wait_for_timeout(2000)
+            # 등록 버튼으로 스크롤
+            await submit_button.scroll_into_view_if_needed()
+            await page.wait_for_timeout(300)
+
+            # 등록 버튼이 활성화될 때까지 대기
+            try:
+                await cafe_iframe.locator("a.btn_register.is_active").wait_for(state="visible", timeout=5000)
+                print("  등록 버튼 활성화 확인")
+            except Exception as e:
+                print(f"  등록 버튼 활성화 대기 중 경고: {e}")
+
+            # 등록 버튼 클릭 (force 옵션으로 강제 클릭)
+            print("  등록 버튼 클릭 중...")
+            try:
+                await submit_button.click(force=True)
+                print("  클릭 성공 (force=True)")
+            except Exception as e:
+                print(f"  일반 클릭 실패, JavaScript로 클릭 시도: {e}")
+                # JavaScript로 직접 클릭
+                await submit_button.evaluate("element => element.click()")
+
+            await page.wait_for_timeout(3000)
+
+            # 댓글 등록 확인 (입력창이 비워졌는지 확인)
+            try:
+                final_value = await comment_input.input_value()
+                if final_value == "":
+                    print("  ✓ 댓글이 성공적으로 등록되었습니다 (입력창 비워짐 확인)")
+                else:
+                    print(f"  ⚠ 댓글 등록 실패 가능성 (입력창에 텍스트 남아있음: {final_value[:30]}...)")
+            except Exception:
+                pass
 
         else:
             print("  일반 페이지 모드로 댓글 작성 중...")
@@ -363,19 +410,37 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                 print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
                 return False
 
+            # 댓글 입력창으로 스크롤 (기존 댓글이 있을 때 중요)
+            await comment_input.scroll_into_view_if_needed()
+            await page.wait_for_timeout(500)
+
             # 댓글 입력
             await comment_input.click()
             await page.wait_for_timeout(500)
+
+            # 기존 내용 지우기
+            await comment_input.fill("")
+            await page.wait_for_timeout(300)
+
+            # 댓글 입력
             await comment_input.fill(comment_text)
             await page.wait_for_timeout(1000)
 
-            # 댓글 등록 버튼 찾기
+            # 입력이 제대로 되었는지 확인
+            input_value = await comment_input.input_value()
+            print(f"  입력된 댓글 확인: {input_value[:50]}...")
+
+            # 댓글 등록 버튼 찾기 (정확한 선택자 우선)
             submit_selectors = [
+                "a.btn_register.is_active",
+                "a.btn_register",
+                ".btn_register.is_active",
+                ".btn_register",
+                "a[role='button'].btn_register",
                 "button:has-text('등록')",
                 "a:has-text('등록')",
                 "input[type='button'][value='등록']",
                 "input[type='submit'][value='등록']",
-                ".btn_register",
                 "#btn_register",
             ]
 
@@ -393,9 +458,38 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
                 print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
                 return False
 
-            # 등록 버튼 클릭
-            await submit_button.click()
-            await page.wait_for_timeout(2000)
+            # 등록 버튼으로 스크롤
+            await submit_button.scroll_into_view_if_needed()
+            await page.wait_for_timeout(300)
+
+            # 등록 버튼이 활성화될 때까지 대기
+            try:
+                await page.locator("a.btn_register.is_active").wait_for(state="visible", timeout=5000)
+                print("  등록 버튼 활성화 확인")
+            except Exception as e:
+                print(f"  등록 버튼 활성화 대기 중 경고: {e}")
+
+            # 등록 버튼 클릭 (force 옵션으로 강제 클릭)
+            print("  등록 버튼 클릭 중...")
+            try:
+                await submit_button.click(force=True)
+                print("  클릭 성공 (force=True)")
+            except Exception as e:
+                print(f"  일반 클릭 실패, JavaScript로 클릭 시도: {e}")
+                # JavaScript로 직접 클릭
+                await submit_button.evaluate("element => element.click()")
+
+            await page.wait_for_timeout(3000)
+
+            # 댓글 등록 확인 (입력창이 비워졌는지 확인)
+            try:
+                final_value = await comment_input.input_value()
+                if final_value == "":
+                    print("  ✓ 댓글이 성공적으로 등록되었습니다 (입력창 비워짐 확인)")
+                else:
+                    print(f"  ⚠ 댓글 등록 실패 가능성 (입력창에 텍스트 남아있음: {final_value[:30]}...)")
+            except Exception:
+                pass
 
         print("  ✓ 댓글 등록 완료")
         return True
