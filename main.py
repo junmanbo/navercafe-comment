@@ -59,7 +59,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         return []
 
 
-async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: str, target_date: str, limit: int = 5) -> list[dict]:
+async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: str, target_date: str) -> list[dict]:
     """
     특정 게시판에서 특정 날짜의 게시글 목록 가져오기
 
@@ -106,9 +106,6 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
 
         for item in article_items:
             # 이미 필요한 개수만큼 찾았으면 중단
-            if len(posts) >= limit:
-                break
-
             try:
                 # 날짜 찾기 (작성일 컬럼) - 여러 선택자 시도
                 date_text = ""
@@ -663,90 +660,80 @@ async def main():
 
         print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
 
-        # '진행'으로 시작하는 게시판 필터링
-        jinhaeng_boards = [board for board in boards if board["name"].startswith("진행")]
-
-        if not jinhaeng_boards:
-            print("\n'진행'으로 시작하는 게시판이 없습니다.")
-            return
-
-        print(f"\n'진행'으로 시작하는 게시판: {len(jinhaeng_boards)}개")
-        for board in jinhaeng_boards:
-            print(f"  - {board['name']}")
-
         # 2일 전 날짜 계산 (YYYY.MM.DD 형식)
         two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y.%m.%d")
         print(f"\n2일 전 날짜: {two_days_ago}")
 
+        check_boards = ["웨딩수다", "자랑", "진행", "맛집", "신부관리"]
+
         # 각 '진행' 게시판에서 2일 전 게시글 확인
-        for board in jinhaeng_boards:
-            print(f"\n{'='*60}")
-            print(f"게시판: {board['name']}")
-            print(f"{'='*60}")
+        for board in boards:
+            board_name = board['name']
 
-            # 2일 전 게시글 5개 가져오기
-            two_days_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], two_days_ago, limit=5)
+            for check_board in check_boards:
+                if check_board in board_name:
+                    print(f"\n{'='*60}")
+                    print(f"게시판: {board_name}")
+                    print(f"{'='*60}")
 
-            if not two_days_posts:
-                print(f"'{board['name']}'에 2일 전 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
-                continue
+                    # 2일 전 게시글 5개 가져오기
+                    two_days_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], two_days_ago)
+                    if not two_days_posts:
+                        print(f"'{board['name']}'에 2일 전 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
+                        continue
+                    print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
+                    
+                    # 각 게시글 방문하고 본문 수집
+                    post_contents = []
+                    for post in two_days_posts:
+                        post_data = await visit_post(page, post["url"], post["title"])
+                        post_contents.append(post_data)
+                        await page.wait_for_timeout(1000)  # 잠시 대기
 
-            print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
+                        # ChatGPT로 댓글 생성
+                        print(f"\n\n{'='*60}")
+                        print(f"[{board['name']}] ChatGPT 댓글 생성 중")
+                        print(f"{'='*60}\n")
 
-            if len(two_days_posts) < 5:
-                print(f"  (5개 미만이지만 {len(two_days_posts)}개 게시글 모두 처리합니다)")
+                        for idx, post_data in enumerate(post_contents, 1):
+                            print(f"\n--- 게시글 {idx} ---")
+                            print(f"제목: {post_data['title']}")
+                            print(f"URL: {post_data['url']}")
+                            print(f"본문 길이: {len(post_data['content'])}자")
 
-            # 각 게시글 방문하고 본문 수집
-            post_contents = []
-            for post in two_days_posts:
-                post_data = await visit_post(page, post["url"], post["title"])
-                post_contents.append(post_data)
-                await page.wait_for_timeout(1000)  # 잠시 대기
+                            # ChatGPT로 댓글 생성
+                            if post_data['content']:
+                                comment = get_chatgpt_comment(post_data['content'])
+                                post_data['comment'] = comment
 
-            # ChatGPT로 댓글 생성
-            print(f"\n\n{'='*60}")
-            print(f"[{board['name']}] ChatGPT 댓글 생성 중")
-            print(f"{'='*60}\n")
+                                if comment:
+                                    # 사용자 확인 받기
+                                    user_approved, comment = get_user_confirmation(comment)
 
-            for idx, post_data in enumerate(post_contents, 1):
-                print(f"\n--- 게시글 {idx} ---")
-                print(f"제목: {post_data['title']}")
-                print(f"URL: {post_data['url']}")
-                print(f"본문 길이: {len(post_data['content'])}자")
+                                    if user_approved:
+                                        # 댓글 등록
+                                        print("\n[댓글 등록 시작]")
+                                        success = await post_comment(page, post_data['url'], comment)
 
-                # ChatGPT로 댓글 생성
-                if post_data['content']:
-                    comment = get_chatgpt_comment(post_data['content'])
-                    post_data['comment'] = comment
+                                        if success:
+                                            print("  ✓ 댓글이 성공적으로 등록되었습니다!")
+                                        else:
+                                            print("  ✗ 댓글 등록에 실패했습니다.")
 
-                    if comment:
-                        # 사용자 확인 받기
-                        user_approved, comment = get_user_confirmation(comment)
-
-                        if user_approved:
-                            # 댓글 등록
-                            print("\n[댓글 등록 시작]")
-                            success = await post_comment(page, post_data['url'], comment)
-
-                            if success:
-                                print("  ✓ 댓글이 성공적으로 등록되었습니다!")
+                                        # 다음 게시글로 이동하기 전 대기
+                                        await page.wait_for_timeout(2000)
+                                    else:
+                                        # 사용자가 N을 선택한 경우
+                                        print("다음 게시글로 이동합니다...")
+                                else:
+                                    print("\n[생성된 댓글]")
+                                    print("(댓글 생성 실패 - 등록 건너뜀)")
                             else:
-                                print("  ✗ 댓글 등록에 실패했습니다.")
+                                print("\n[생성된 댓글]")
+                                print("(본문이 없어 댓글을 생성할 수 없습니다)")
+                                post_data['comment'] = ""
 
-                            # 다음 게시글로 이동하기 전 대기
-                            await page.wait_for_timeout(2000)
-                        else:
-                            # 사용자가 N을 선택한 경우
-                            print("다음 게시글로 이동합니다...")
-                    else:
-                        print("\n[생성된 댓글]")
-                        print("(댓글 생성 실패 - 등록 건너뜀)")
-                else:
-                    print("\n[생성된 댓글]")
-                    print("(본문이 없어 댓글을 생성할 수 없습니다)")
-                    post_data['comment'] = ""
-
-                print(f"\n{'='*60}")
+                            print(f"\n{'='*60}")
 
         print("\n" + "=" * 60)
         print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
