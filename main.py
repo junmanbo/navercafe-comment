@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+import re
 
 from dotenv import load_dotenv
 from playwright.async_api import Page, async_playwright
@@ -36,7 +36,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         # 좌측 메뉴의 게시판 링크 찾기
         menu_items = await page.locator("a.gm-tcol-c").all()
 
-        print(f"\n발견된 메뉴 항목 수: {len(menu_items)}")
+        #print(f"\n발견된 메뉴 항목 수: {len(menu_items)}")
 
         for item in menu_items:
             try:
@@ -48,7 +48,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
                         "name": name.strip(),
                         "url": href
                     })
-                    print(f"  - {name.strip()}")
+                    #print(f"  - {name.strip()}")
             except Exception:
                 continue
 
@@ -104,6 +104,9 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
 
         print(f"발견된 전체 행 수: {len(article_items)}")
 
+        # 시간 형식 패턴 (HH:MM)
+        time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+
         for item in article_items:
             # 이미 필요한 개수만큼 찾았으면 중단
             try:
@@ -119,8 +122,16 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                 if not date_text or date_text.strip() == "":
                     continue
 
-                # 특정 날짜 게시글만 필터링 (YYYY.MM.DD 형식 매칭)
-                if target_date in date_text:
+                # 오늘 게시글 (시간 형식) 또는 특정 날짜 게시글 필터링
+                is_match = False
+                if target_date == ":":
+                    # 시간 형식(HH:MM)인지 확인
+                    is_match = time_pattern.match(date_text.strip())
+                else:
+                    # 특정 날짜 매칭 (YYYY.MM.DD 형식)
+                    is_match = target_date in date_text
+
+                if is_match:
                     # 제목 찾기
                     title = ""
                     post_url = ""
@@ -660,13 +671,12 @@ async def main():
 
         print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
 
-        # 2일 전 날짜 계산 (YYYY.MM.DD 형식)
-        two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y.%m.%d")
-        print(f"\n2일 전 날짜: {two_days_ago}")
+        # 오늘 등록된 게시글 찾기 (시간 형식: HH:MM)
+        print("\n오늘 등록된 게시글을 검색합니다 (시간 형식 HH:MM 체크)")
 
         check_boards = ["웨딩수다", "자랑", "진행", "맛집", "신부관리"]
 
-        # 각 '진행' 게시판에서 2일 전 게시글 확인
+        # 각 게시판에서 오늘 등록된 게시글 확인 (시간 형식으로 표시된 글)
         for board in boards:
             board_name = board['name']
 
@@ -676,16 +686,16 @@ async def main():
                     print(f"게시판: {board_name}")
                     print(f"{'='*60}")
 
-                    # 2일 전 게시글 5개 가져오기
-                    two_days_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], two_days_ago)
-                    if not two_days_posts:
-                        print(f"'{board['name']}'에 2일 전 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
+                    # 오늘 등록된 게시글 가져오기 (시간 형식: HH:MM)
+                    today_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], ":")
+                    if not today_posts:
+                        print(f"'{board['name']}'에 오늘 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
                         continue
-                    print(f"\n2일 전 작성된 게시글: {len(two_days_posts)}개")
-                    
+                    print(f"\n오늘 작성된 게시글: {len(today_posts)}개")
+
                     # 각 게시글 방문하고 본문 수집
                     post_contents = []
-                    for post in two_days_posts:
+                    for post in today_posts:
                         post_data = await visit_post(page, post["url"], post["title"])
                         post_contents.append(post_data)
                         await page.wait_for_timeout(1000)  # 잠시 대기
@@ -734,6 +744,8 @@ async def main():
                                 post_data['comment'] = ""
 
                             print(f"\n{'='*60}")
+                else:
+                    break
 
         print("\n" + "=" * 60)
         print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
