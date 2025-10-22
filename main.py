@@ -9,6 +9,15 @@ from openai import OpenAI
 # .env 파일 로드
 load_dotenv()
 
+# 타임아웃 상수 정의 (밀리초)
+TIMEOUT_VERY_SHORT = 100
+TIMEOUT_SHORT = 300
+TIMEOUT_MEDIUM = 500
+TIMEOUT_LONG = 1000
+TIMEOUT_VERY_LONG = 2000
+TIMEOUT_EXTRA_LONG = 3000
+TIMEOUT_BUTTON_ACTIVATION = 5000
+
 
 async def get_cafe_boards(page: Page) -> list[dict]:
     """
@@ -24,19 +33,14 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         print("\n카페 게시판 목록 불러오는 중...")
 
         # iframe으로 전환 (네이버 카페는 iframe 구조 사용)
-        await page.wait_for_timeout(2000)  # 페이지 로딩 대기
+        await page.wait_for_timeout(TIMEOUT_VERY_LONG)  # 페이지 로딩 대기
 
         # 좌측 메뉴의 게시판 링크들 찾기
         # 네이버 카페의 좌측 메뉴 구조를 탐색
         boards = []
 
-        # iframe 내부로 전환
-        page.frame_locator("iframe#cafe_main")
-
         # 좌측 메뉴의 게시판 링크 찾기
         menu_items = await page.locator("a.gm-tcol-c").all()
-
-        #print(f"\n발견된 메뉴 항목 수: {len(menu_items)}")
 
         for item in menu_items:
             try:
@@ -48,7 +52,6 @@ async def get_cafe_boards(page: Page) -> list[dict]:
                         "name": name.strip(),
                         "url": href
                     })
-                    #print(f"  - {name.strip()}")
             except Exception:
                 continue
 
@@ -82,9 +85,7 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
 
         await page.goto(board_url)
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(3000)
-
-        print(f"찾을 날짜: {target_date}")
+        await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
 
         posts = []
 
@@ -108,13 +109,12 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
 
         for item in article_items:
-            # 이미 필요한 개수만큼 찾았으면 중단
             try:
                 # 날짜 찾기 (작성일 컬럼) - 여러 선택자 시도
                 date_text = ""
                 try:
                     date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
-                    date_text = await date_elem.inner_text(timeout=100)
+                    date_text = await date_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
                 except Exception:
                     pass
 
@@ -137,8 +137,8 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
                     post_url = ""
                     try:
                         title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
-                        title = await title_elem.inner_text(timeout=100)
-                        post_url = await title_elem.get_attribute("href", timeout=100)
+                        title = await title_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
+                        post_url = await title_elem.get_attribute("href", timeout=TIMEOUT_VERY_SHORT)
                     except Exception:
                         pass
 
@@ -202,12 +202,117 @@ def get_user_confirmation(comment_text: str):
             print("⚠ 잘못된 입력입니다. Y 또는 N을 입력해주세요.")
 
 
-def get_chatgpt_comment(post_content: str) -> str:
+async def find_element_by_selectors(locator_context, selectors: list[str], element_name: str) -> tuple:
+    """
+    여러 선택자를 시도하여 요소 찾기
+
+    Args:
+        locator_context: page 또는 frame_locator 객체
+        selectors: 시도할 선택자 리스트
+        element_name: 요소 이름 (로깅용)
+
+    Returns:
+        tuple: (element, selector) 또는 (None, None)
+    """
+    for selector in selectors:
+        try:
+            element = locator_context.locator(selector).first
+            if await element.count() > 0:
+                print(f"  {element_name} 발견 (선택자: {selector})")
+                return element, selector
+        except Exception:
+            continue
+
+    print(f"  ⚠ {element_name}을(를) 찾을 수 없습니다.")
+    return None, None
+
+
+async def process_comment_input(comment_input, page, comment_text: str) -> bool:
+    """
+    댓글 입력 처리 (공통 로직)
+
+    Args:
+        comment_input: 댓글 입력창 요소
+        page: Page 객체
+        comment_text: 입력할 댓글 내용
+
+    Returns:
+        bool: 입력 성공 여부
+    """
+    try:
+        # 댓글 입력창으로 스크롤
+        await comment_input.scroll_into_view_if_needed()
+        await page.wait_for_timeout(TIMEOUT_MEDIUM)
+
+        # 댓글 입력
+        await comment_input.click()
+        await page.wait_for_timeout(TIMEOUT_MEDIUM)
+
+        # 기존 내용 지우기
+        await comment_input.fill("")
+        await page.wait_for_timeout(TIMEOUT_SHORT)
+
+        # 댓글 입력
+        await comment_input.fill(comment_text)
+        await page.wait_for_timeout(TIMEOUT_LONG)
+
+        # 입력이 제대로 되었는지 확인
+        input_value = await comment_input.input_value()
+        print(f"  입력된 댓글 확인: {input_value[:50]}...")
+        return True
+    except Exception as e:
+        print(f"  댓글 입력 중 오류: {e}")
+        return False
+
+
+async def click_submit_button(submit_button, locator_context, page) -> bool:
+    """
+    등록 버튼 클릭 처리 (공통 로직)
+
+    Args:
+        submit_button: 등록 버튼 요소
+        locator_context: page 또는 frame_locator 객체
+        page: Page 객체
+
+    Returns:
+        bool: 클릭 성공 여부
+    """
+    try:
+        # 등록 버튼으로 스크롤
+        await submit_button.scroll_into_view_if_needed()
+        await page.wait_for_timeout(TIMEOUT_SHORT)
+
+        # 등록 버튼이 활성화될 때까지 대기
+        try:
+            await locator_context.locator("a.btn_register.is_active").wait_for(state="visible", timeout=TIMEOUT_BUTTON_ACTIVATION)
+            print("  등록 버튼 활성화 확인")
+        except Exception as e:
+            print(f"  등록 버튼 활성화 대기 중 경고: {e}")
+
+        # 등록 버튼 클릭 (force 옵션으로 강제 클릭)
+        print("  등록 버튼 클릭 중...")
+        try:
+            await submit_button.click(force=True)
+            print("  클릭 성공 (force=True)")
+        except Exception as e:
+            print(f"  일반 클릭 실패, JavaScript로 클릭 시도: {e}")
+            # JavaScript로 직접 클릭
+            await submit_button.evaluate("element => element.click()")
+
+        await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
+        return True
+    except Exception as e:
+        print(f"  버튼 클릭 중 오류: {e}")
+        return False
+
+
+def get_chatgpt_comment(post_content: str, client: OpenAI = None) -> str:
     """
     OpenAI API를 사용하여 게시글에 대한 댓글 생성
 
     Args:
         post_content: 게시글 본문 내용
+        client: OpenAI 클라이언트 (선택적, 없으면 새로 생성)
 
     Returns:
         str: ChatGPT가 생성한 댓글
@@ -215,14 +320,14 @@ def get_chatgpt_comment(post_content: str) -> str:
     try:
         print("  OpenAI API로 댓글 요청 중...")
 
-        # OpenAI API 키 가져오기
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            print("  ⚠ .env 파일에 OPENAI_API_KEY가 설정되지 않았습니다.")
-            return ""
-
-        # OpenAI 클라이언트 생성
-        client = OpenAI(api_key=api_key)
+        # OpenAI 클라이언트가 없으면 생성
+        if client is None:
+            # OpenAI API 키 가져오기
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                print("  ⚠ .env 파일에 OPENAI_API_KEY가 설정되지 않았습니다.")
+                return ""
+            client = OpenAI(api_key=api_key)
 
         # 프롬프트 작성
         prompt = f"아래의 글을 읽고 구어체로 간단하게 한줄 댓글을 작성해줘. 존댓말을 사용하고 답변으로는 딱 한줄 댓글만 작성해줘. 글 내용: {post_content[:1000]}"  # 내용이 너무 길면 처음 1000자만
@@ -239,7 +344,6 @@ def get_chatgpt_comment(post_content: str) -> str:
         comment = response.output_text
 
         # 특수기호 제거 (한글, 영문, 숫자, 공백만 남기기)
-        import re
         comment = re.sub(r'[^가-힣a-zA-Z0-9\s]', '', comment)
 
         # 양쪽 공백 제거
@@ -278,226 +382,70 @@ async def post_comment(page: Page, post_url: str, comment_text: str) -> bool:
         if current_url != post_url:
             await page.goto(post_url)
             await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(2000)
+            await page.wait_for_timeout(TIMEOUT_VERY_LONG)
 
         # iframe 존재 여부 확인
         iframe_exists = await page.locator("iframe#cafe_main").count() > 0
 
+        # 댓글 입력창 선택자
+        comment_selectors = [
+            "textarea[name='memo']",
+            "textarea.textarea",
+            "textarea#memo",
+            ".comment_inbox textarea",
+            "[class*='comment'] textarea",
+            "[class*='Comment'] textarea",
+        ]
+
+        # 등록 버튼 선택자
+        submit_selectors = [
+            "a.btn_register.is_active",
+            "a.btn_register",
+            ".btn_register.is_active",
+            ".btn_register",
+            "a[role='button'].btn_register",
+            "button:has-text('등록')",
+            "a:has-text('등록')",
+            "input[type='button'][value='등록']",
+            "input[type='submit'][value='등록']",
+            "#btn_register",
+        ]
+
+        # iframe 모드 또는 일반 페이지 모드 설정
         if iframe_exists:
             print("  iframe 모드로 댓글 작성 중...")
-            cafe_iframe = page.frame_locator("iframe#cafe_main")
-
-            # 댓글 입력창 찾기 (여러 선택자 시도)
-            comment_selectors = [
-                "textarea[name='memo']",
-                "textarea.textarea",
-                "textarea#memo",
-                ".comment_inbox textarea",
-                "[class*='comment'] textarea",
-            ]
-
-            comment_input = None
-            for selector in comment_selectors:
-                try:
-                    comment_input = cafe_iframe.locator(selector).first
-                    if await comment_input.count() > 0:
-                        print(f"  댓글 입력창 발견 (선택자: {selector})")
-                        break
-                except Exception:
-                    continue
-
-            if not comment_input or await comment_input.count() == 0:
-                print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
-                return False
-
-            # 댓글 입력창으로 스크롤 (기존 댓글이 있을 때 중요)
-            await comment_input.scroll_into_view_if_needed()
-            await page.wait_for_timeout(500)
-
-            # 댓글 입력
-            await comment_input.click()
-            await page.wait_for_timeout(500)
-
-            # 기존 내용 지우기
-            await comment_input.fill("")
-            await page.wait_for_timeout(300)
-
-            # 댓글 입력
-            await comment_input.fill(comment_text)
-            await page.wait_for_timeout(1000)
-
-            # 입력이 제대로 되었는지 확인
-            input_value = await comment_input.input_value()
-            print(f"  입력된 댓글 확인: {input_value[:50]}...")
-
-            # 댓글 등록 버튼 찾기 (정확한 선택자 우선)
-            submit_selectors = [
-                "a.btn_register.is_active",
-                "a.btn_register",
-                ".btn_register.is_active",
-                ".btn_register",
-                "a[role='button'].btn_register",
-                "button:has-text('등록')",
-                "a:has-text('등록')",
-                "input[type='button'][value='등록']",
-                "input[type='submit'][value='등록']",
-                "#btn_register",
-            ]
-
-            submit_button = None
-            for selector in submit_selectors:
-                try:
-                    submit_button = cafe_iframe.locator(selector).first
-                    if await submit_button.count() > 0:
-                        print(f"  등록 버튼 발견 (선택자: {selector})")
-                        break
-                except Exception:
-                    continue
-
-            if not submit_button or await submit_button.count() == 0:
-                print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
-                return False
-
-            # 등록 버튼으로 스크롤
-            await submit_button.scroll_into_view_if_needed()
-            await page.wait_for_timeout(300)
-
-            # 등록 버튼이 활성화될 때까지 대기
-            try:
-                await cafe_iframe.locator("a.btn_register.is_active").wait_for(state="visible", timeout=5000)
-                print("  등록 버튼 활성화 확인")
-            except Exception as e:
-                print(f"  등록 버튼 활성화 대기 중 경고: {e}")
-
-            # 등록 버튼 클릭 (force 옵션으로 강제 클릭)
-            print("  등록 버튼 클릭 중...")
-            try:
-                await submit_button.click(force=True)
-                print("  클릭 성공 (force=True)")
-            except Exception as e:
-                print(f"  일반 클릭 실패, JavaScript로 클릭 시도: {e}")
-                # JavaScript로 직접 클릭
-                await submit_button.evaluate("element => element.click()")
-
-            await page.wait_for_timeout(3000)
-
-            # 댓글 등록 확인 (입력창이 비워졌는지 확인)
-            try:
-                final_value = await comment_input.input_value()
-                if final_value == "":
-                    print("  ✓ 댓글이 성공적으로 등록되었습니다 (입력창 비워짐 확인)")
-                else:
-                    print(f"  ⚠ 댓글 등록 실패 가능성 (입력창에 텍스트 남아있음: {final_value[:30]}...)")
-            except Exception:
-                pass
-
+            locator_context = page.frame_locator("iframe#cafe_main")
         else:
             print("  일반 페이지 모드로 댓글 작성 중...")
+            locator_context = page
 
-            # 댓글 입력창 찾기
-            comment_selectors = [
-                "textarea[name='memo']",
-                "textarea.textarea",
-                "textarea#memo",
-                ".comment_inbox textarea",
-                "[class*='comment'] textarea",
-                "[class*='Comment'] textarea",
-            ]
+        # 댓글 입력창 찾기
+        comment_input, _ = await find_element_by_selectors(locator_context, comment_selectors, "댓글 입력창")
+        if not comment_input:
+            return False
 
-            comment_input = None
-            for selector in comment_selectors:
-                try:
-                    if await page.locator(selector).count() > 0:
-                        comment_input = page.locator(selector).first
-                        print(f"  댓글 입력창 발견 (선택자: {selector})")
-                        break
-                except Exception:
-                    continue
+        # 댓글 입력 처리
+        if not await process_comment_input(comment_input, page, comment_text):
+            return False
 
-            if not comment_input:
-                print("  ⚠ 댓글 입력창을 찾을 수 없습니다.")
-                return False
+        # 등록 버튼 찾기
+        submit_button, _ = await find_element_by_selectors(locator_context, submit_selectors, "등록 버튼")
+        if not submit_button:
+            return False
 
-            # 댓글 입력창으로 스크롤 (기존 댓글이 있을 때 중요)
-            await comment_input.scroll_into_view_if_needed()
-            await page.wait_for_timeout(500)
+        # 등록 버튼 클릭 처리
+        if not await click_submit_button(submit_button, locator_context, page):
+            return False
 
-            # 댓글 입력
-            await comment_input.click()
-            await page.wait_for_timeout(500)
-
-            # 기존 내용 지우기
-            await comment_input.fill("")
-            await page.wait_for_timeout(300)
-
-            # 댓글 입력
-            await comment_input.fill(comment_text)
-            await page.wait_for_timeout(1000)
-
-            # 입력이 제대로 되었는지 확인
-            input_value = await comment_input.input_value()
-            print(f"  입력된 댓글 확인: {input_value[:50]}...")
-
-            # 댓글 등록 버튼 찾기 (정확한 선택자 우선)
-            submit_selectors = [
-                "a.btn_register.is_active",
-                "a.btn_register",
-                ".btn_register.is_active",
-                ".btn_register",
-                "a[role='button'].btn_register",
-                "button:has-text('등록')",
-                "a:has-text('등록')",
-                "input[type='button'][value='등록']",
-                "input[type='submit'][value='등록']",
-                "#btn_register",
-            ]
-
-            submit_button = None
-            for selector in submit_selectors:
-                try:
-                    if await page.locator(selector).count() > 0:
-                        submit_button = page.locator(selector).first
-                        print(f"  등록 버튼 발견 (선택자: {selector})")
-                        break
-                except Exception:
-                    continue
-
-            if not submit_button:
-                print("  ⚠ 등록 버튼을 찾을 수 없습니다.")
-                return False
-
-            # 등록 버튼으로 스크롤
-            await submit_button.scroll_into_view_if_needed()
-            await page.wait_for_timeout(300)
-
-            # 등록 버튼이 활성화될 때까지 대기
-            try:
-                await page.locator("a.btn_register.is_active").wait_for(state="visible", timeout=5000)
-                print("  등록 버튼 활성화 확인")
-            except Exception as e:
-                print(f"  등록 버튼 활성화 대기 중 경고: {e}")
-
-            # 등록 버튼 클릭 (force 옵션으로 강제 클릭)
-            print("  등록 버튼 클릭 중...")
-            try:
-                await submit_button.click(force=True)
-                print("  클릭 성공 (force=True)")
-            except Exception as e:
-                print(f"  일반 클릭 실패, JavaScript로 클릭 시도: {e}")
-                # JavaScript로 직접 클릭
-                await submit_button.evaluate("element => element.click()")
-
-            await page.wait_for_timeout(3000)
-
-            # 댓글 등록 확인 (입력창이 비워졌는지 확인)
-            try:
-                final_value = await comment_input.input_value()
-                if final_value == "":
-                    print("  ✓ 댓글이 성공적으로 등록되었습니다 (입력창 비워짐 확인)")
-                else:
-                    print(f"  ⚠ 댓글 등록 실패 가능성 (입력창에 텍스트 남아있음: {final_value[:30]}...)")
-            except Exception:
-                pass
+        # 댓글 등록 확인 (입력창이 비워졌는지 확인)
+        try:
+            final_value = await comment_input.input_value()
+            if final_value == "":
+                print("  ✓ 댓글이 성공적으로 등록되었습니다 (입력창 비워짐 확인)")
+            else:
+                print(f"  ⚠ 댓글 등록 실패 가능성 (입력창에 텍스트 남아있음: {final_value[:30]}...)")
+        except Exception:
+            pass
 
         print("  ✓ 댓글 등록 완료")
         return True
@@ -524,7 +472,7 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
 
         await page.goto(post_url)
         await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(TIMEOUT_VERY_LONG)
 
         # 본문 내용 가져오기
         content = ""
@@ -539,7 +487,7 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
             try:
                 # 본문 영역 선택자 (다양한 선택자 시도)
                 content_elem = cafe_iframe.locator(".se-main-container, .ArticleContentBox, div.article_viewer, #content").first
-                content = await content_elem.inner_text(timeout=3000)
+                content = await content_elem.inner_text(timeout=TIMEOUT_EXTRA_LONG)
             except Exception as e:
                 print(f"  iframe 본문 추출 실패: {e}")
         else:
@@ -558,7 +506,7 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
                 for selector in selectors:
                     try:
                         content_elem = page.locator(selector).first
-                        content = await content_elem.inner_text(timeout=1000)
+                        content = await content_elem.inner_text(timeout=TIMEOUT_LONG)
                         if content and content.strip():
                             print(f"  본문 추출 성공 (선택자: {selector})")
                             break
@@ -604,10 +552,19 @@ async def main():
     cafe_url = os.getenv("CAFE_URL")
     naver_id = os.getenv("NAVER_ID")
     naver_pw = os.getenv("NAVER_PW")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
 
     if not cafe_url:
         print(".env 파일에 CAFE_URL을 설정해주세요.")
         return
+
+    # OpenAI 클라이언트 초기화 (한 번만 생성하여 재사용)
+    openai_client = None
+    if openai_api_key:
+        openai_client = OpenAI(api_key=openai_api_key)
+        print("OpenAI 클라이언트 초기화 완료")
+    else:
+        print("⚠ .env 파일에 OPENAI_API_KEY가 설정되지 않았습니다. 댓글 생성 기능을 사용할 수 없습니다.")
 
     async with async_playwright() as p:
         # Chromium 브라우저 실행
@@ -631,11 +588,11 @@ async def main():
 
             # 아이디 입력
             await page.fill('input[name="id"]', naver_id)
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(TIMEOUT_MEDIUM)
 
             # 비밀번호 입력
             await page.fill('input[name="pw"]', naver_pw)
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(TIMEOUT_MEDIUM)
 
             # 로그인 버튼 클릭
             await page.click('button[type="submit"]')
@@ -694,58 +651,50 @@ async def main():
                     print(f"\n오늘 작성된 게시글: {len(today_posts)}개")
 
                     # 각 게시글 방문하고 본문 수집
-                    post_contents = []
-                    for post in today_posts:
+                    for idx, post in enumerate(today_posts, 1):
                         post_data = await visit_post(page, post["url"], post["title"])
-                        post_contents.append(post_data)
-                        await page.wait_for_timeout(1000)  # 잠시 대기
+                        await page.wait_for_timeout(TIMEOUT_LONG)  # 잠시 대기
 
                         # ChatGPT로 댓글 생성
                         print(f"\n\n{'='*60}")
-                        print(f"[{board['name']}] ChatGPT 댓글 생성 중")
+                        print(f"[{board['name']}] 게시글 {idx}/{len(today_posts)} - ChatGPT 댓글 생성 중")
                         print(f"{'='*60}\n")
 
-                        for idx, post_data in enumerate(post_contents, 1):
-                            print(f"\n--- 게시글 {idx} ---")
-                            print(f"제목: {post_data['title']}")
-                            print(f"URL: {post_data['url']}")
-                            print(f"본문 길이: {len(post_data['content'])}자")
+                        print(f"제목: {post_data['title']}")
+                        print(f"URL: {post_data['url']}")
+                        print(f"본문 길이: {len(post_data['content'])}자")
 
-                            # ChatGPT로 댓글 생성
-                            if post_data['content']:
-                                comment = get_chatgpt_comment(post_data['content'])
-                                post_data['comment'] = comment
+                        # ChatGPT로 댓글 생성
+                        if post_data['content']:
+                            comment = get_chatgpt_comment(post_data['content'], openai_client)
 
-                                if comment:
-                                    # 사용자 확인 받기
-                                    user_approved, comment = get_user_confirmation(comment)
+                            if comment:
+                                # 사용자 확인 받기
+                                user_approved, comment = get_user_confirmation(comment)
 
-                                    if user_approved:
-                                        # 댓글 등록
-                                        print("\n[댓글 등록 시작]")
-                                        success = await post_comment(page, post_data['url'], comment)
+                                if user_approved:
+                                    # 댓글 등록
+                                    print("\n[댓글 등록 시작]")
+                                    success = await post_comment(page, post_data['url'], comment)
 
-                                        if success:
-                                            print("  ✓ 댓글이 성공적으로 등록되었습니다!")
-                                        else:
-                                            print("  ✗ 댓글 등록에 실패했습니다.")
-
-                                        # 다음 게시글로 이동하기 전 대기
-                                        await page.wait_for_timeout(2000)
+                                    if success:
+                                        print("  ✓ 댓글이 성공적으로 등록되었습니다!")
                                     else:
-                                        # 사용자가 N을 선택한 경우
-                                        print("다음 게시글로 이동합니다...")
+                                        print("  ✗ 댓글 등록에 실패했습니다.")
+
+                                    # 다음 게시글로 이동하기 전 대기
+                                    await page.wait_for_timeout(TIMEOUT_VERY_LONG)
                                 else:
-                                    print("\n[생성된 댓글]")
-                                    print("(댓글 생성 실패 - 등록 건너뜀)")
+                                    # 사용자가 N을 선택한 경우
+                                    print("다음 게시글로 이동합니다...")
                             else:
                                 print("\n[생성된 댓글]")
-                                print("(본문이 없어 댓글을 생성할 수 없습니다)")
-                                post_data['comment'] = ""
+                                print("(댓글 생성 실패 - 등록 건너뜀)")
+                        else:
+                            print("\n[생성된 댓글]")
+                            print("(본문이 없어 댓글을 생성할 수 없습니다)")
 
-                            print(f"\n{'='*60}")
-                else:
-                    break
+                        print(f"\n{'='*60}")
 
         print("\n" + "=" * 60)
         print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
