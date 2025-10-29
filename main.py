@@ -62,7 +62,7 @@ async def get_cafe_boards(page: Page) -> list[dict]:
         return []
 
 
-async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: str, target_date: str) -> list[dict]:
+async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: str, target_date: str, max_pages: int = 1) -> list[dict]:
     """
     특정 게시판에서 특정 날짜의 게시글 목록 가져오기
 
@@ -70,8 +70,8 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         page: Playwright Page 객체
         board_url: 게시판 URL
         board_name: 게시판 이름
-        target_date: 찾을 날짜 (YYYY.MM.DD 형식)
-        limit: 가져올 최대 게시글 수
+        target_date: 찾을 날짜 (YYYY.MM.DD 형식, 또는 ":" for today)
+        max_pages: 순회할 최대 페이지 수 (기본값: 1)
 
     Returns:
         list[dict]: 게시글 정보 리스트 (title, url, date)
@@ -83,88 +83,110 @@ async def get_posts_from_board_by_date(page: Page, board_url: str, board_name: s
         if board_url.startswith("/"):
             board_url = f"https://cafe.naver.com{board_url}"
 
-        await page.goto(board_url)
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
+        all_posts = []
 
-        posts = []
+        # 페이지별로 순회
+        for page_num in range(1, max_pages + 1):
+            print(f"\n--- {page_num}페이지 수집 중 ---")
 
-        # 새로운 카페 UI는 iframe 없이 직접 렌더링됨
-        # iframe 존재 여부 확인
-        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+            # 페이지 URL 생성
+            if page_num == 1:
+                current_url = board_url
+            else:
+                # 페이지 번호를 URL에 추가 (네이버 카페의 페이지네이션 형식)
+                separator = "&" if "?" in board_url else "?"
+                current_url = f"{board_url}{separator}page={page_num}"
 
-        if iframe_exists:
-            print("iframe 모드로 게시글 검색 중...")
-            # 구버전: iframe 내부에서 게시글 목록 찾기
-            cafe_iframe = page.frame_locator("iframe#cafe_main")
-            article_items = await cafe_iframe.locator("tr").all()
-        else:
-            print("일반 페이지 모드로 게시글 검색 중...")
-            # 신버전: 메인 페이지에서 직접 게시글 목록 찾기
-            article_items = await page.locator("tr").all()
+            await page.goto(current_url)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
 
-        print(f"발견된 전체 행 수: {len(article_items)}")
+            # 새로운 카페 UI는 iframe 없이 직접 렌더링됨
+            # iframe 존재 여부 확인
+            iframe_exists = await page.locator("iframe#cafe_main").count() > 0
 
-        # 시간 형식 패턴 (HH:MM)
-        time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+            if iframe_exists:
+                print("iframe 모드로 게시글 검색 중...")
+                # 구버전: iframe 내부에서 게시글 목록 찾기
+                cafe_iframe = page.frame_locator("iframe#cafe_main")
+                article_items = await cafe_iframe.locator("tr").all()
+            else:
+                print("일반 페이지 모드로 게시글 검색 중...")
+                # 신버전: 메인 페이지에서 직접 게시글 목록 찾기
+                article_items = await page.locator("tr").all()
 
-        for item in article_items:
-            try:
-                # 날짜 찾기 (작성일 컬럼) - 여러 선택자 시도
-                date_text = ""
+            print(f"발견된 전체 행 수: {len(article_items)}")
+
+            # 시간 형식 패턴 (HH:MM)
+            time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+
+            page_posts = []
+
+            for item in article_items:
                 try:
-                    date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
-                    date_text = await date_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
-                except Exception:
-                    pass
-
-                # 날짜 텍스트가 비어있으면 스킵
-                if not date_text or date_text.strip() == "":
-                    continue
-
-                # 오늘 게시글 (시간 형식) 또는 특정 날짜 게시글 필터링
-                is_match = False
-                if target_date == ":":
-                    # 시간 형식(HH:MM)인지 확인
-                    is_match = time_pattern.match(date_text.strip())
-                else:
-                    # 특정 날짜 매칭 (YYYY.MM.DD 형식)
-                    is_match = target_date in date_text
-
-                if is_match:
-                    # 제목 찾기
-                    title = ""
-                    post_url = ""
+                    # 날짜 찾기 (작성일 컬럼) - 여러 선택자 시도
+                    date_text = ""
                     try:
-                        title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
-                        title = await title_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
-                        post_url = await title_elem.get_attribute("href", timeout=TIMEOUT_VERY_SHORT)
+                        date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
+                        date_text = await date_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
                     except Exception:
                         pass
 
-                    if title and post_url:
-                        # 제목에 '공지'가 포함된 게시글은 제외
-                        if '공지' in title:
-                            print(f"  ⊗ [{date_text.strip()}] {title.strip()} (공지 게시글 제외)")
-                            continue
+                    # 날짜 텍스트가 비어있으면 스킵
+                    if not date_text or date_text.strip() == "":
+                        continue
 
-                        # 상대 경로를 절대 경로로 변환
-                        if post_url.startswith("/"):
-                            post_url = f"https://cafe.naver.com{post_url}"
+                    # 오늘 게시글 (시간 형식) 또는 특정 날짜 게시글 필터링
+                    is_match = False
+                    if target_date == ":":
+                        # 시간 형식(HH:MM)인지 확인
+                        is_match = time_pattern.match(date_text.strip())
+                    else:
+                        # 특정 날짜 매칭 (YYYY.MM.DD 형식)
+                        is_match = target_date in date_text
 
-                        posts.append({
-                            "title": title.strip(),
-                            "url": post_url,
-                            "date": date_text.strip()
-                        })
-                        print(f"  ✓ [{date_text.strip()}] {title.strip()}")
+                    if is_match:
+                        # 제목 찾기
+                        title = ""
+                        post_url = ""
+                        try:
+                            title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
+                            title = await title_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
+                            post_url = await title_elem.get_attribute("href", timeout=TIMEOUT_VERY_SHORT)
+                        except Exception:
+                            pass
 
-            except Exception:
-                # 제목이나 날짜가 없는 행은 무시
-                continue
+                        if title and post_url:
+                            # 제목에 '공지'가 포함된 게시글은 제외
+                            if '공지' in title:
+                                print(f"  ⊗ [{date_text.strip()}] {title.strip()} (공지 게시글 제외)")
+                                continue
 
-        print(f"'{board_name}'에서 찾은 게시글: {len(posts)}개")
-        return posts
+                            # 상대 경로를 절대 경로로 변환
+                            if post_url.startswith("/"):
+                                post_url = f"https://cafe.naver.com{post_url}"
+
+                            page_posts.append({
+                                "title": title.strip(),
+                                "url": post_url,
+                                "date": date_text.strip()
+                            })
+                            print(f"  ✓ [{date_text.strip()}] {title.strip()}")
+
+                except Exception:
+                    # 제목이나 날짜가 없는 행은 무시
+                    continue
+
+            print(f"{page_num}페이지에서 찾은 게시글: {len(page_posts)}개")
+            all_posts.extend(page_posts)
+
+            # 해당 페이지에 오늘 날짜 게시글이 없으면 더 이상 다음 페이지를 확인하지 않음
+            if target_date == ":" and len(page_posts) == 0:
+                print(f"{page_num}페이지에 오늘 작성된 게시글이 없어 페이지 순회를 중단합니다.")
+                break
+
+        print(f"\n'{board_name}'에서 총 {len(all_posts)}개의 게시글을 찾았습니다.")
+        return all_posts
 
     except Exception as e:
         print(f"'{board_name}' 게시판에서 게시글 가져오기 중 오류 발생: {e}")
@@ -633,18 +655,32 @@ async def main():
 
         check_boards = ["웨딩수다", "자랑", "진행", "맛집", "신부관리"]
 
+        # 댓글 등록 카운터 초기화
+        comment_count = 0
+        max_comment_count = 60
+        should_exit = False  # 종료 플래그
+
         # 각 게시판에서 오늘 등록된 게시글 확인 (시간 형식으로 표시된 글)
         for board in boards:
+            if should_exit:
+                break
+
             board_name = board['name']
 
             for check_board in check_boards:
+                if should_exit:
+                    break
+
                 if check_board in board_name:
                     print(f"\n{'='*60}")
                     print(f"게시판: {board_name}")
                     print(f"{'='*60}")
 
+                    # '웨딩수다' 게시판인 경우 5페이지까지 순회
+                    max_pages = 5 if '웨딩수다' in board_name else 1
+
                     # 오늘 등록된 게시글 가져오기 (시간 형식: HH:MM)
-                    today_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], ":")
+                    today_posts = await get_posts_from_board_by_date(page, board["url"], board["name"], ":", max_pages)
                     if not today_posts:
                         print(f"'{board['name']}'에 오늘 작성된 게시글이 없습니다. 다음 게시판으로 이동합니다.")
                         continue
@@ -652,12 +688,16 @@ async def main():
 
                     # 각 게시글 방문하고 본문 수집
                     for idx, post in enumerate(today_posts, 1):
+                        if should_exit:
+                            break
+
                         post_data = await visit_post(page, post["url"], post["title"])
                         await page.wait_for_timeout(TIMEOUT_LONG)  # 잠시 대기
 
                         # ChatGPT로 댓글 생성
                         print(f"\n\n{'='*60}")
                         print(f"[{board['name']}] 게시글 {idx}/{len(today_posts)} - ChatGPT 댓글 생성 중")
+                        print(f"현재 등록된 댓글 수: {comment_count}/{max_comment_count}")
                         print(f"{'='*60}\n")
 
                         print(f"제목: {post_data['title']}")
@@ -678,7 +718,18 @@ async def main():
                                     success = await post_comment(page, post_data['url'], comment)
 
                                     if success:
-                                        print("  ✓ 댓글이 성공적으로 등록되었습니다!")
+                                        comment_count += 1  # 댓글 카운터 증가
+                                        print(f"  ✓ 댓글이 성공적으로 등록되었습니다! (총 {comment_count}개 등록)")
+
+                                        # 60개 도달 시 종료
+                                        if comment_count >= max_comment_count:
+                                            print("\n" + "=" * 60)
+                                            print(f"  목표 댓글 수({max_comment_count}개)에 도달했습니다!")
+                                            print(f"  총 {comment_count}개의 댓글을 등록했습니다.")
+                                            print("=" * 60)
+                                            input("\n프로그램을 종료하려면 Enter 키를 눌러주세요...")
+                                            should_exit = True
+                                            break
                                     else:
                                         print("  ✗ 댓글 등록에 실패했습니다.")
 
@@ -696,9 +747,16 @@ async def main():
 
                         print(f"\n{'='*60}")
 
-        print("\n" + "=" * 60)
-        print("모든 작업 완료! 브라우저를 수동으로 닫아주세요.")
-        print("=" * 60)
+        # 종료 메시지 출력
+        if not should_exit:
+            print("\n" + "=" * 60)
+            print("모든 게시판 확인 완료!")
+            print(f"총 {comment_count}개의 댓글을 등록했습니다.")
+            print("=" * 60)
+            print("브라우저를 수동으로 닫아주세요.")
+        else:
+            print("\n프로그램을 종료합니다.")
+            print("브라우저를 수동으로 닫아주세요.")
 
         # 브라우저 자동 종료 비활성화 (사용자가 직접 닫음)
         # await browser.close()
