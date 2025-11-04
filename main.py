@@ -19,249 +19,133 @@ TIMEOUT_EXTRA_LONG = 3000
 TIMEOUT_BUTTON_ACTIVATION = 5000
 
 
-async def get_cafe_boards(page: Page) -> list[dict]:
+# (게시판 목록 자동 수집 코드는 삭제되었습니다.)
+# 대신 main()에서 처리할 게시판 목록을 고정 리스트로 설정합니다.
+
+
+async def process_board_by_article_numbers(page: Page, board_url: str, board_name: str, openai_client, comment_count: int, max_comment_count: int, max_attempts_per_board: int = 500) -> tuple[int, bool]:
     """
-    카페 좌측 메뉴에서 게시판 목록 가져오기
+    게시판의 최상단 게시글 번호를 가져와서 게시글 번호를 1씩 감소시키며
+    각 게시글 URL로 이동하여 댓글을 남기는 방식으로 처리합니다.
 
     Args:
         page: Playwright Page 객체
-
-    Returns:
-        list[dict]: 게시판 정보 리스트 (name, url)
-    """
-    try:
-        print("\n카페 게시판 목록 불러오는 중...")
-
-        # iframe으로 전환 (네이버 카페는 iframe 구조 사용)
-        await page.wait_for_timeout(TIMEOUT_VERY_LONG)  # 페이지 로딩 대기
-
-        # 좌측 메뉴의 게시판 링크들 찾기
-        # 네이버 카페의 좌측 메뉴 구조를 탐색
-        boards = []
-
-        # 좌측 메뉴의 게시판 링크 찾기
-        menu_items = await page.locator("a.gm-tcol-c").all()
-
-        for item in menu_items:
-            try:
-                name = await item.inner_text()
-                href = await item.get_attribute("href")
-
-                if name and href:
-                    boards.append({
-                        "name": name.strip(),
-                        "url": href
-                    })
-            except Exception:
-                continue
-
-        return boards
-
-    except Exception as e:
-        print(f"게시판 목록 불러오기 중 오류 발생: {e}")
-        return []
-
-
-async def process_board_page_by_page(page: Page, board_url: str, board_name: str, target_date: str, max_pages: int, openai_client, comment_count: int, max_comment_count: int) -> tuple[int, bool]:
-    """
-    게시판 페이지를 순회하면서 한 게시글씩 처리
-
-    Args:
-        page: Playwright Page 객체
-        board_url: 게시판 URL (기본 URL)
+        board_url: 게시판 메뉴 URL (예: .../menus/588)
         board_name: 게시판 이름
-        target_date: 찾을 날짜 (YYYY.MM.DD 형식, 또는 ":" for today)
-        max_pages: 순회할 최대 페이지 수
         openai_client: OpenAI 클라이언트
         comment_count: 현재 댓글 카운트
         max_comment_count: 최대 댓글 수
+        max_attempts_per_board: 게시판당 시도할 최대 게시글 수 (무한루프 방지)
 
     Returns:
         tuple[int, bool]: (업데이트된 comment_count, should_exit 플래그)
     """
     try:
-        print(f"\n'{board_name}' 게시판 처리 시작...")
+        print(f"\n'{board_name}' 게시판 처리 시작 (게시글 번호 기반)...")
 
-        # 게시판 페이지로 이동 (상대 경로를 절대 경로로 변환)
+        # 게시판 URL 정규화
         if board_url.startswith("/"):
             base_board_url = f"https://cafe.naver.com{board_url}"
         else:
             base_board_url = board_url
 
-        # 시간 형식 패턴 (HH:MM)
-        time_pattern = re.compile(r'^\d{1,2}:\d{2}$')
+        # 메뉴id(게시판 id)와 cafe id 추출 (예: /cafes/24453752/menus/588)
+        m = re.search(r"/cafes/(\d+)/menus/(\d+)", base_board_url)
+        if not m:
+            print("  ⚠ 게시판 URL에서 cafe id 또는 menu id를 추출하지 못했습니다.")
+            return comment_count, False
 
-        # 페이지별로 순회
-        for page_num in range(1, max_pages + 1):
-            if comment_count >= max_comment_count:
-                print(f"\n목표 댓글 수({max_comment_count}개)에 도달하여 종료합니다.")
-                return comment_count, True
+        cafe_id = m.group(1)
+        menu_id = m.group(2)
 
-            print(f"\n{'='*60}")
-            print(f"[{board_name}] {page_num}페이지 처리 중")
-            print(f"{'='*60}")
+        # 게시판 페이지로 이동하여 최상단 게시글 번호 추출
+        await page.goto(base_board_url)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
 
-            # 페이지 URL 생성 - URL 파싱하여 올바르게 생성
-            if page_num == 1:
-                current_page_url = base_board_url
+        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+        if iframe_exists:
+            context = page.frame_locator("iframe#cafe_main")
+            rows = await context.locator("tr").all()
+        else:
+            context = page
+            rows = await page.locator("tr").all()
+
+        if not rows:
+            print("  ⚠ 게시판에서 게시글 행을 찾지 못했습니다.")
+            return comment_count, False
+
+        # 첫번째 유효한 게시글 번호 찾기
+        top_article_number = None
+        for row in rows:
+            try:
+                num_elem = row.locator("td.td_normal.type_articleNumber, td[class*='type_articleNumber']").first
+                if await num_elem.count() > 0:
+                    num_text = (await num_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)).strip()
+                    mm = re.search(r"(\d+)", num_text)
+                    if mm:
+                        top_article_number = int(mm.group(1))
+                        break
+            except Exception:
+                continue
+
+        if top_article_number is None:
+            print("  ⚠ 최상단 게시글 번호를 찾지 못했습니다.")
+            return comment_count, False
+
+        print(f"  초기 최상단 게시글 번호: {top_article_number}")
+
+        # 게시글 번호를 1씩 감소시키며 처리
+        current_article_number = top_article_number
+        attempts = 0
+
+        while comment_count < max_comment_count and attempts < max_attempts_per_board and current_article_number > 0:
+            attempts += 1
+
+            post_url = f"https://cafe.naver.com/f-e/cafes/{cafe_id}/articles/{current_article_number}?menuid={menu_id}&referrerAllArticles=false"
+            print(f"\n  시도 #{attempts}: 게시글로 이동: {post_url}")
+
+            # 게시글 방문 및 본문 추출
+            post_data = await visit_post(page, post_url, f"article-{current_article_number}")
+            await page.wait_for_timeout(TIMEOUT_LONG)
+
+            if not post_data['content'] or post_data['content'].strip() == "":
+                print(f"  ⚠ 본문을 찾을 수 없거나 비어있음: {current_article_number} (건너뜀)")
+                current_article_number -= 1
+                continue
+
+            # 댓글 생성
+            comment = get_chatgpt_comment(post_data['content'], openai_client)
+            if not comment:
+                print("  ⚠ 댓글 생성 실패 (건너뜀)")
+                current_article_number -= 1
+                continue
+
+            # 사용자 확인
+            user_approved, comment = get_user_confirmation(comment)
+            if not user_approved:
+                print("  사용자가 댓글 등록을 거부함. 다음 게시글로 이동합니다.")
+                current_article_number -= 1
+                continue
+
+            # 댓글 등록 시도
+            print("  댓글 등록 시도...")
+            success = await post_comment(page, post_url, comment)
+            if success:
+                comment_count += 1
+                print(f"  ✓ 댓글 등록 성공 (총 {comment_count})")
             else:
-                # URL에 이미 파라미터가 있는지 확인
-                if "?" in base_board_url:
-                    # 기존 파라미터가 있으면 & 사용
-                    current_page_url = f"{base_board_url}&page={page_num}"
-                else:
-                    # 파라미터가 없으면 ? 사용
-                    current_page_url = f"{base_board_url}?page={page_num}"
+                print("  ✗ 댓글 등록 실패")
 
-            print(f"페이지 URL: {current_page_url}")
+            # 다음 게시글 번호로 이동
+            current_article_number -= 1
+            await page.wait_for_timeout(TIMEOUT_VERY_LONG)
 
-            # 게시판 페이지로 이동
-            await page.goto(current_page_url)
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
+        if comment_count >= max_comment_count:
+            print(f"  목표 댓글 수({max_comment_count})에 도달했습니다.")
+            return comment_count, True
 
-            # iframe 존재 여부 확인
-            iframe_exists = await page.locator("iframe#cafe_main").count() > 0
-
-            if iframe_exists:
-                print("iframe 모드로 게시글 검색 중...")
-                cafe_iframe = page.frame_locator("iframe#cafe_main")
-                article_items = await cafe_iframe.locator("tr").all()
-            else:
-                print("일반 페이지 모드로 게시글 검색 중...")
-                article_items = await page.locator("tr").all()
-
-            print(f"발견된 전체 행 수: {len(article_items)}")
-
-            # 이 페이지에서 처리한 게시글 수
-            processed_posts_in_page = 0
-
-            # 각 행을 순회하면서 오늘 날짜 게시글 찾기
-            for item in article_items:
-                if comment_count >= max_comment_count:
-                    print(f"\n목표 댓글 수({max_comment_count}개)에 도달하여 종료합니다.")
-                    return comment_count, True
-
-                try:
-                    # 날짜 찾기
-                    date_text = ""
-                    try:
-                        date_elem = item.locator("td.td_date, td[class*='date'], .date, td:has-text('2025')")
-                        date_text = await date_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
-                    except Exception:
-                        continue
-
-                    # 날짜 텍스트가 비어있으면 스킵
-                    if not date_text or date_text.strip() == "":
-                        continue
-
-                    # 오늘 게시글 (시간 형식) 또는 특정 날짜 게시글 필터링
-                    is_match = False
-                    if target_date == ":":
-                        is_match = time_pattern.match(date_text.strip())
-                    else:
-                        is_match = target_date in date_text
-
-                    if not is_match:
-                        continue
-
-                    # 제목과 URL 찾기
-                    title = ""
-                    post_url = ""
-                    try:
-                        title_elem = item.locator("a[href*='articles'], a[href*='Article']").first
-                        title = await title_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)
-                        post_url = await title_elem.get_attribute("href", timeout=TIMEOUT_VERY_SHORT)
-                    except Exception:
-                        continue
-
-                    if not title or not post_url:
-                        continue
-
-                    # 제목에 '공지'가 포함된 게시글은 제외
-                    if '공지' in title:
-                        print(f"  ⊗ [{date_text.strip()}] {title.strip()} (공지 게시글 제외)")
-                        continue
-
-                    # 상대 경로를 절대 경로로 변환
-                    if post_url.startswith("/"):
-                        post_url = f"https://cafe.naver.com{post_url}"
-
-                    # 게시글 발견 - 바로 처리
-                    processed_posts_in_page += 1
-                    print(f"\n{'='*60}")
-                    print(f"[{board_name}] {page_num}페이지 {processed_posts_in_page}번째 게시글 처리")
-                    print(f"제목: {title.strip()}")
-                    print(f"작성일: {date_text.strip()}")
-                    print(f"현재 등록된 댓글 수: {comment_count}/{max_comment_count}")
-                    print(f"{'='*60}")
-
-                    # 게시글 방문하여 본문 가져오기
-                    post_data = await visit_post(page, post_url, title.strip())
-                    await page.wait_for_timeout(TIMEOUT_LONG)
-
-                    # ChatGPT로 댓글 생성
-                    if post_data['content']:
-                        comment = get_chatgpt_comment(post_data['content'], openai_client)
-
-                        if comment:
-                            # 사용자 확인 받기
-                            user_approved, comment = get_user_confirmation(comment)
-
-                            if user_approved:
-                                # 댓글 등록
-                                print("\n[댓글 등록 시작]")
-                                success = await post_comment(page, post_data['url'], comment)
-
-                                if success:
-                                    comment_count += 1
-                                    print(f"  ✓ 댓글이 성공적으로 등록되었습니다! (총 {comment_count}개 등록)")
-
-                                    # 60개 도달 시 종료
-                                    if comment_count >= max_comment_count:
-                                        print("\n" + "=" * 60)
-                                        print(f"  목표 댓글 수({max_comment_count}개)에 도달했습니다!")
-                                        print(f"  총 {comment_count}개의 댓글을 등록했습니다.")
-                                        print("=" * 60)
-                                        input("\n프로그램을 종료하려면 Enter 키를 눌러주세요...")
-                                        return comment_count, True
-                                else:
-                                    print("  ✗ 댓글 등록에 실패했습니다.")
-
-                                # 다음 게시글로 이동하기 전 대기
-                                await page.wait_for_timeout(TIMEOUT_VERY_LONG)
-                            else:
-                                print("다음 게시글로 이동합니다...")
-                        else:
-                            print("(댓글 생성 실패 - 등록 건너뜀)")
-                    else:
-                        print("(본문이 없어 댓글을 생성할 수 없습니다)")
-
-                    # 다시 게시판 페이지로 돌아가기
-                    print(f"\n게시판 페이지로 돌아갑니다: {current_page_url}")
-                    await page.goto(current_page_url)
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
-
-                    # iframe 다시 확인 (페이지가 바뀌었으므로)
-                    iframe_exists = await page.locator("iframe#cafe_main").count() > 0
-                    if iframe_exists:
-                        cafe_iframe = page.frame_locator("iframe#cafe_main")
-                        article_items = await cafe_iframe.locator("tr").all()
-                    else:
-                        article_items = await page.locator("tr").all()
-
-                except Exception as e:
-                    print(f"게시글 처리 중 오류: {e}")
-                    continue
-
-            # 해당 페이지에 오늘 날짜 게시글이 없으면 더 이상 다음 페이지 확인 안함
-            if target_date == ":" and processed_posts_in_page == 0:
-                print(f"\n{page_num}페이지에 오늘 작성된 게시글이 없어 페이지 순회를 중단합니다.")
-                break
-
-            print(f"\n{page_num}페이지에서 {processed_posts_in_page}개의 게시글을 처리했습니다.")
-
+        print(f"  게시판 처리 종료: 시도한 게시글 수={attempts}, 등록된 댓글 수={comment_count}")
         return comment_count, False
 
     except Exception as e:
@@ -717,58 +601,48 @@ async def main():
         await page.goto(cafe_url)
         await page.wait_for_load_state("networkidle")
 
-        # 게시판 목록 가져오기
-        boards = await get_cafe_boards(page)
+        # 고정 게시판 목록: 사용자가 지정한 게시판 ID만 처리합니다.
+        boards = [
+            {
+                "name": "웨딩수다",
+                "url": "https://cafe.naver.com/f-e/cafes/24453752/menus/588"
+            },
+            {
+                "name": "(자랑) 포인트인증",
+                "url": "https://cafe.naver.com/f-e/cafes/24453752/menus/491"
+            }
+        ]
 
-        if not boards:
-            print("\n게시판을 찾을 수 없습니다.")
-            return
-
-        print(f"\n총 {len(boards)}개의 게시판을 발견했습니다.")
-
-        # 오늘 등록된 게시글 찾기 (시간 형식: HH:MM)
-        print("\n오늘 등록된 게시글을 검색합니다 (시간 형식 HH:MM 체크)")
-
-        check_boards = ["웨딩수다", "자랑", "진행", "맛집", "신부관리"]
+        print(f"\n총 {len(boards)}개의 대상 게시판을 처리합니다.")
 
         # 댓글 등록 카운터 초기화
         comment_count = 0
         max_comment_count = 60
         should_exit = False  # 종료 플래그
 
-        # 각 게시판에서 오늘 등록된 게시글 확인 (시간 형식으로 표시된 글)
+        # 지정된 게시판만 순회
         for board in boards:
             if should_exit:
                 break
 
             board_name = board['name']
+            print(f"\n{'='*60}")
+            print(f"게시판: {board_name}")
+            print(f"{'='*60}")
 
-            for check_board in check_boards:
-                if should_exit:
-                    break
+            # 게시판의 게시글 번호를 기준으로 순회하면서 댓글 작성
+            comment_count, should_exit = await process_board_by_article_numbers(
+                page=page,
+                board_url=board["url"],
+                board_name=board["name"],
+                openai_client=openai_client,
+                comment_count=comment_count,
+                max_comment_count=max_comment_count,
+                max_attempts_per_board=500
+            )
 
-                if check_board in board_name:
-                    print(f"\n{'='*60}")
-                    print(f"게시판: {board_name}")
-                    print(f"{'='*60}")
-
-                    # '웨딩수다' 게시판인 경우 5페이지까지 순회
-                    max_pages = 5 if '웨딩수다' in board_name else 1
-
-                    # 새로운 방식: 게시판 페이지를 순회하면서 한 게시글씩 처리
-                    comment_count, should_exit = await process_board_page_by_page(
-                        page=page,
-                        board_url=board["url"],
-                        board_name=board["name"],
-                        target_date=":",
-                        max_pages=max_pages,
-                        openai_client=openai_client,
-                        comment_count=comment_count,
-                        max_comment_count=max_comment_count
-                    )
-
-                    if should_exit:
-                        break
+            if should_exit:
+                break
 
         # 종료 메시지 출력
         if not should_exit:
