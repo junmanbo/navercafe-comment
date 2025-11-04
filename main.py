@@ -114,6 +114,19 @@ async def process_board_by_article_numbers(page: Page, board_url: str, board_nam
                 current_article_number -= 1
                 continue
 
+            # 게시글 제목 및 본문 첫 줄을 사용자에게 보여줌
+            try:
+                first_line = ""
+                for ln in post_data['content'].splitlines():
+                    if ln.strip():
+                        first_line = ln.strip()
+                        break
+                preview = first_line if first_line else (post_data['content'][:200] if post_data['content'] else "(본문 없음)")
+                print(f"\n[게시글 정보] 제목: {post_data['title']}")
+                print(f"[게시글 미리보기] {preview}\n")
+            except Exception:
+                pass
+
             # 댓글 생성
             comment = get_chatgpt_comment(post_data['content'], openai_client)
             if not comment:
@@ -462,27 +475,60 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
         # iframe 존재 여부 확인
         iframe_exists = await page.locator("iframe#cafe_main").count() > 0
 
+        # 우선 실제 페이지에서 제목(title) 추출 시도
+        extracted_title = None
+        try:
+            # 다양한 제목 선택자 시도 ('.title_text'를 최우선으로 사용)
+            title_selectors = [
+                ".title_text",
+                "h1",
+                "h2",
+                "h3",
+                ".article_title",
+                ".title_subject",
+                ".tit",
+                ".post_title",
+                ".article_head h3",
+                "div.title",
+                ".title_area",
+            ]
+
+            if iframe_exists:
+                context = page.frame_locator("iframe#cafe_main")
+            else:
+                context = page
+
+            for sel in title_selectors:
+                try:
+                    elem = context.locator(sel).first
+                    if await elem.count() > 0:
+                        t = (await elem.inner_text(timeout=TIMEOUT_LONG)).strip()
+                        if t:
+                            extracted_title = t
+                            break
+                except Exception:
+                    continue
+        except Exception:
+            extracted_title = None
+
+        # iframe/일반 모드에 따라 본문 추출
         if iframe_exists:
             print("  iframe 모드로 본문 추출 중...")
-            # 구버전: iframe 내부에서 본문 찾기
             cafe_iframe = page.frame_locator("iframe#cafe_main")
             try:
-                # 본문 영역 선택자 (다양한 선택자 시도)
                 content_elem = cafe_iframe.locator(".se-main-container, .ArticleContentBox, div.article_viewer, #content").first
                 content = await content_elem.inner_text(timeout=TIMEOUT_EXTRA_LONG)
             except Exception as e:
                 print(f"  iframe 본문 추출 실패: {e}")
         else:
             print("  일반 페이지 모드로 본문 추출 중...")
-            # 신버전: 메인 페이지에서 직접 본문 찾기
             try:
-                # 다양한 본문 선택자 시도
                 selectors = [
-                    ".se-main-container",  # 스마트에디터
-                    ".article_viewer",  # 구버전 카페
-                    "[class*='ArticleContent']",  # 새 카페 UI
-                    "article",  # HTML5 article 태그
-                    ".post_ct",  # 포스트 컨텐츠
+                    ".se-main-container",
+                    ".article_viewer",
+                    "[class*='ArticleContent']",
+                    "article",
+                    ".post_ct",
                 ]
 
                 for selector in selectors:
@@ -494,7 +540,6 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
                             break
                     except Exception:
                         continue
-
             except Exception as e:
                 print(f"  본문 추출 실패: {e}")
 
@@ -508,13 +553,16 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
 
         content = content.strip()
 
+        # 제목은 추출된 제목을 우선 사용하고, 없으면 전달받은 post_title을 사용
+        final_title = extracted_title if extracted_title and extracted_title.strip() else post_title
+
         if content:
-            print(f"✓ 게시글 로드 완료: {post_title} (본문 길이: {len(content)}자)")
+            print(f"✓ 게시글 로드 완료: {final_title} (본문 길이: {len(content)}자)")
         else:
-            print(f"⚠ 게시글 로드 완료하였으나 본문을 찾을 수 없음: {post_title}")
+            print(f"⚠ 게시글 로드 완료하였으나 본문을 찾을 수 없음: {final_title}")
 
         return {
-            "title": post_title,
+            "title": final_title,
             "url": post_url,
             "content": content
         }
