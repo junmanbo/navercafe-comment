@@ -58,63 +58,129 @@ async def process_board_by_article_numbers(page: Page, board_url: str, board_nam
         cafe_id = m.group(1)
         menu_id = m.group(2)
 
-        # 게시판 페이지로 이동하여 최상단 게시글 번호 추출
+        # --------------------------------------------------
+        # 새로운 로직: 1~5 페이지에서 게시글 번호들을 먼저 수집한 뒤,
+        # 수집한 번호들만 순회하여 게시글 방문 및 댓글 등록을 수행합니다.
+        # --------------------------------------------------
         await page.goto(base_board_url)
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(TIMEOUT_EXTRA_LONG)
 
-        iframe_exists = await page.locator("iframe#cafe_main").count() > 0
-        if iframe_exists:
-            context = page.frame_locator("iframe#cafe_main")
-            rows = await context.locator("tr").all()
-        else:
-            context = page
-            rows = await page.locator("tr").all()
+        collected_numbers: list[int] = []
+        MAX_PAGES_TO_SCAN = 5
 
-        if not rows:
-            print("  ⚠ 게시판에서 게시글 행을 찾지 못했습니다.")
-            return comment_count, False
+        for page_idx in range(1, MAX_PAGES_TO_SCAN + 1):
+            print(f"  게시판 리스트에서 페이지 {page_idx}의 게시글 번호 수집 시도...")
 
-        # 첫번째 유효한 게시글 번호 찾기
-        top_article_number = None
-        for row in rows:
-            try:
-                num_elem = row.locator("td.td_normal.type_articleNumber, td[class*='type_articleNumber']").first
-                if await num_elem.count() > 0:
-                    num_text = (await num_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)).strip()
-                    mm = re.search(r"(\d+)", num_text)
-                    if mm:
-                        top_article_number = int(mm.group(1))
-                        break
-            except Exception:
+            # 페이지 이동 (1페이지는 이미 로드되어 있음)
+            if page_idx > 1:
+                navigated = False
+
+                # 우선 페이징 컨테이너 안의 해당 페이지 번호 링크를 클릭 시도
+                iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+                if iframe_exists:
+                    page_context = page.frame_locator("iframe#cafe_main")
+                else:
+                    page_context = page
+
+                paging_containers = ["div.paging", ".paging", ".paginate", ".pagination", ".page", ".page_nav", ".pg"]
+                for pc in paging_containers:
+                    try:
+                        container = page_context.locator(pc).first
+                        if await container.count() > 0:
+                            link = container.locator(f"a:has-text('{page_idx}')").first
+                            if await link.count() > 0:
+                                try:
+                                    await link.click()
+                                    await page.wait_for_load_state("networkidle")
+                                    await page.wait_for_timeout(TIMEOUT_LONG)
+                                    navigated = True
+                                    break
+                                except Exception:
+                                    continue
+                    except Exception:
+                        continue
+
+                # 실패 시 URL 패턴으로 직접 이동 시도
+                if not navigated:
+                    url_candidates = [
+                        f"{base_board_url}?page={page_idx}",
+                        f"{base_board_url}&page={page_idx}",
+                        f"{base_board_url}?p={page_idx}",
+                        f"{base_board_url}?documentListPage={page_idx}",
+                    ]
+                    for u in url_candidates:
+                        try:
+                            await page.goto(u)
+                            await page.wait_for_load_state("networkidle")
+                            await page.wait_for_timeout(TIMEOUT_LONG)
+                            navigated = True
+                            break
+                        except Exception:
+                            continue
+
+                if not navigated:
+                    print(f"  ⚠ 페이지 {page_idx}로 이동하지 못했습니다. 다음 페이지로 계속합니다.")
+                    continue
+
+            # 현재 페이지에서 게시글 번호 추출
+            iframe_exists = await page.locator("iframe#cafe_main").count() > 0
+            if iframe_exists:
+                context = page.frame_locator("iframe#cafe_main")
+                rows = await context.locator("tr").all()
+            else:
+                context = page
+                rows = await page.locator("tr").all()
+
+            if not rows:
+                print(f"  ⚠ 페이지 {page_idx}에서 게시글 행을 찾지 못했습니다.")
                 continue
 
-        if top_article_number is None:
-            print("  ⚠ 최상단 게시글 번호를 찾지 못했습니다.")
+            # 해당 페이지의 게시글 번호들 추출
+            for row in rows:
+                try:
+                    num_elem = row.locator("td.td_normal.type_articleNumber, td[class*='type_articleNumber']").first
+                    if await num_elem.count() > 0:
+                        num_text = (await num_elem.inner_text(timeout=TIMEOUT_VERY_SHORT)).strip()
+                        mm = re.search(r"(\d+)", num_text)
+                        if mm:
+                            collected_numbers.append(int(mm.group(1)))
+                except Exception:
+                    continue
+
+            print(f"  페이지 {page_idx}에서 수집한 게시글 수: {len(collected_numbers)} (중복 포함)")
+
+        # 중복 제거 (순서 보존)
+        seen = set()
+        article_list = []
+        for n in collected_numbers:
+            if n not in seen:
+                seen.add(n)
+                article_list.append(n)
+
+        if not article_list:
+            print("  ⚠ 수집된 게시글 번호가 없습니다. 게시판 처리를 종료합니다.")
             return comment_count, False
 
-        print(f"  초기 최상단 게시글 번호: {top_article_number}")
+        print(f"  최종 수집된 게시글 번호 수: {len(article_list)} (최대 {MAX_PAGES_TO_SCAN}페이지 기준)")
 
-        # 게시글 번호를 1씩 감소시키며 처리
-        current_article_number = top_article_number
+        # 이제 수집된 게시글 번호들만 순회하여 처리
         attempts = 0
+        for idx, article_number in enumerate(article_list, start=1):
+            if comment_count >= max_comment_count or attempts >= max_attempts_per_board:
+                break
 
-        while comment_count < max_comment_count and attempts < max_attempts_per_board and current_article_number > 0:
             attempts += 1
-
-            post_url = f"https://cafe.naver.com/f-e/cafes/{cafe_id}/articles/{current_article_number}?menuid={menu_id}&referrerAllArticles=false"
+            post_url = f"https://cafe.naver.com/f-e/cafes/{cafe_id}/articles/{article_number}?menuid={menu_id}&referrerAllArticles=false"
             print(f"\n  시도 #{attempts}: 게시글로 이동: {post_url}")
 
-            # 게시글 방문 및 본문 추출
-            post_data = await visit_post(page, post_url, f"article-{current_article_number}")
+            post_data = await visit_post(page, post_url, f"article-{article_number}")
             await page.wait_for_timeout(TIMEOUT_LONG)
 
             if not post_data['content'] or post_data['content'].strip() == "":
-                print(f"  ⚠ 본문을 찾을 수 없거나 비어있음: {current_article_number} (건너뜀)")
-                current_article_number -= 1
+                print(f"  ⚠ 본문을 찾을 수 없거나 비어있음: {article_number} (건너뜀)")
                 continue
 
-            # 게시글 제목 및 본문 첫 줄을 사용자에게 보여줌
             try:
                 first_line = ""
                 for ln in post_data['content'].splitlines():
@@ -127,21 +193,16 @@ async def process_board_by_article_numbers(page: Page, board_url: str, board_nam
             except Exception:
                 pass
 
-            # 댓글 생성
             comment = get_chatgpt_comment(post_data['content'], openai_client)
             if not comment:
                 print("  ⚠ 댓글 생성 실패 (건너뜀)")
-                current_article_number -= 1
                 continue
 
-            # 사용자 확인
             user_approved, comment = get_user_confirmation(comment)
             if not user_approved:
                 print("  사용자가 댓글 등록을 거부함. 다음 게시글로 이동합니다.")
-                current_article_number -= 1
                 continue
 
-            # 댓글 등록 시도
             print("  댓글 등록 시도...")
             success = await post_comment(page, post_url, comment)
             if success:
@@ -150,8 +211,6 @@ async def process_board_by_article_numbers(page: Page, board_url: str, board_nam
             else:
                 print("  ✗ 댓글 등록 실패")
 
-            # 다음 게시글 번호로 이동
-            current_article_number -= 1
             await page.wait_for_timeout(TIMEOUT_VERY_LONG)
 
         if comment_count >= max_comment_count:
