@@ -18,6 +18,8 @@ TIMEOUT_VERY_LONG = 2000
 TIMEOUT_EXTRA_LONG = 3000
 TIMEOUT_BUTTON_ACTIVATION = 5000
 
+# 자동모드 플래그 (기본: False). 메인에서 사용자 입력에 따라 변경됩니다.
+AUTO_MODE = False
 
 # (게시판 목록 자동 수집 코드는 삭제되었습니다.)
 # 대신 main()에서 처리할 게시판 목록을 고정 리스트로 설정합니다.
@@ -239,6 +241,12 @@ def get_user_confirmation(comment_text: str):
     print("[생성된 댓글 내용]")
     print(f"\"{comment_text}\"")
     print("=" * 60)
+
+    # AUTO_MODE가 활성화 되어 있으면 사용자 확인 없이 자동으로 승인
+    global AUTO_MODE
+    if AUTO_MODE:
+        print("자동모드(Auto) 활성화: 모든 댓글을 자동으로 등록합니다.")
+        return True, comment_text
 
     while True:
         response = input("\n정말 이 댓글로 등록하시겠습니까? [Y/N] \n댓글 수정을 원하면 [FIX]를 입력해 주세요.: ").strip().upper()
@@ -637,6 +645,8 @@ async def visit_post(page: Page, post_url: str, post_title: str) -> dict:
 
 async def main():
     """메인 함수"""
+    # 전역 AUTO_MODE 사용을 명시
+    global AUTO_MODE
     # 환경 변수에서 설정 가져오기
     cafe_url = os.getenv("CAFE_URL")
     naver_id = os.getenv("NAVER_ID")
@@ -707,6 +717,21 @@ async def main():
         print(f"\n카페로 이동 중: {cafe_url}")
         await page.goto(cafe_url)
         await page.wait_for_load_state("networkidle")
+
+        # 자동모드 선택: 사용자가 Y를 입력하면 모든 댓글 확인을 자동 승인하도록 설정
+        try:
+            # 동기 입력으로 사용자에게 Auto 모드 선택을 물음
+            auto_input = input("\nAuto 모드로 댓글을 모두 자동 등록하시겠습니까? [Y/N]: ").strip().upper()
+            if auto_input == 'Y':
+                AUTO_MODE = True
+                print("Auto 모드가 활성화되었습니다. 모든 댓글을 자동으로 등록합니다.")
+            else:
+                AUTO_MODE = False
+                print("Auto 모드 비활성화: 기존 확인 방식으로 진행합니다.")
+        except Exception:
+            # 만약 입력이 불가능하면 기존 방식 유지
+            AUTO_MODE = False
+            print("입력 오류 발생: Auto 모드 비활성화 상태로 진행합니다.")
 
         # 고정 게시판 목록: 사용자가 지정한 게시판 ID만 처리합니다.
         boards = [
